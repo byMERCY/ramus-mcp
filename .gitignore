@@ -9,3 +9,16 @@ __pycache__/
 /*.png
 /diagram*.png
 /diagram*.svg
+
+# secrets and certificates
+.env
+*.pem
+*.crt
+
+# test and coverage caches
+.pytest_cache/
+.coverage
+
+# Ramus models: the author's own data, and the shipped samples belong to Ramus.
+# The tests build their fixtures on the fly, so no model belongs in the repository.
+*.rsf
