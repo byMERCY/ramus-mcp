@@ -1,120 +1,122 @@
 """Rasterise a Ramus diagram to PNG.
 
 The SVG renderer is for a person to look at or save; this one exists so the agent can *see* a
-diagram, because MCP shows the model raster images, not SVG. Same layout, drawn with Pillow.
-
-Boxes only for now (milestone M1); arrows arrive with M2.
+diagram, because MCP shows the model raster images, not SVG. It draws the same scene
+(:mod:`scene`) with Pillow. Pillow does not anti-alias its shapes, so the picture is drawn
+larger than it is delivered and scaled down - lines and arrowheads come out smooth.
 """
 
 from __future__ import annotations
 
 import io
-from typing import List, Optional
+import math
+from functools import lru_cache
+from typing import List, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
 
 try:
-    from .ramus_rsf import Diagram, Activity
+    from .ramus_rsf import Diagram
+    from .scene import Dot, Line, Poly, Rect, Scene, build_scene, font_path
 except ImportError:  # pragma: no cover - script execution
-    from ramus_rsf import Diagram, Activity
+    from ramus_rsf import Diagram
+    from scene import Dot, Line, Poly, Rect, Scene, build_scene, font_path
 
 
-MARGIN = 40.0
-SCALE = 2.0  # model units -> pixels; 2x keeps text crisp without a huge image
-FONT_SIZE = 11
-NUMBER_FONT_SIZE = 10
-TITLE_FONT_SIZE = 12
-LINE_GAP = 2  # extra pixels between wrapped lines
+SCALE = 2.0  # model units -> pixels in the delivered image
+SUPERSAMPLE = 2  # drawn this many times larger, then scaled down
+_ANCHORS = {"start": "ls", "middle": "ms", "end": "rs"}  # PIL anchors: horizontal + baseline
 
 
-def _load_font(size: int) -> ImageFont.FreeTypeFont:
-    """A real TrueType face, so Cyrillic renders and text is not the PIL bitmap default."""
-    for name in ("segoeui.ttf", "arial.ttf", "DejaVuSans.ttf"):
-        try:
-            return ImageFont.truetype(name, size)
-        except OSError:
+@lru_cache(maxsize=32)
+def _font(pixels: int):
+    """A TrueType face at this pixel size, or Pillow's bitmap default if none is installed."""
+    path = font_path()
+    if path is None:
+        return ImageFont.load_default()
+    return ImageFont.truetype(path, pixels)
+
+
+def _dashes(points: List[Tuple[float, float]], on: float, off: float):
+    """Cut a polyline into the visible pieces of a dashed line."""
+    pieces: List[List[Tuple[float, float]]] = []
+    drawing, remaining = True, on
+    current = [points[0]]
+    for a, b in zip(points, points[1:]):
+        length = math.dist(a, b)
+        if length == 0:
             continue
-    return ImageFont.load_default()
+        pos = 0.0
+        while pos < length:
+            step = min(remaining, length - pos)
+            t = (pos + step) / length
+            point = (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+            if drawing:
+                current.append(point)
+            pos += step
+            remaining -= step
+            if remaining <= 1e-9:
+                if drawing:
+                    pieces.append(current)
+                    current = []
+                else:
+                    current = [point]
+                drawing = not drawing
+                remaining = on if drawing else off
+    if drawing and len(current) > 1:
+        pieces.append(current)
+    return pieces
 
 
-def _text_width(draw: ImageDraw.ImageDraw, text: str, font) -> float:
-    return draw.textlength(text, font=font)
-
-
-def _wrap(draw, name: str, font, box_px_width: float) -> List[str]:
-    usable = max(box_px_width - 10 * SCALE, 1)
-    words = name.split()
-    if not words:
-        return [""]
-    lines: List[str] = []
-    line = words[0]
-    for word in words[1:]:
-        trial = line + " " + word
-        if _text_width(draw, trial, font) <= usable:
-            line = trial
-        else:
-            lines.append(line)
-            line = word
-    lines.append(line)
-    return lines
-
-
-def render_diagram_png(diagram: Diagram, title: str = "") -> bytes:
-    boxes = diagram.activities
-    if boxes:
-        min_x = min(a.x for a in boxes)
-        min_y = min(a.y for a in boxes)
-        max_x = max(a.x + a.width for a in boxes)
-        max_y = max(a.y + a.height for a in boxes)
-    else:
-        min_x = min_y = 0.0
-        max_x = max_y = 100.0
-
-    width_px = int(((max_x - min_x) + 2 * MARGIN) * SCALE)
-    height_px = int(((max_y - min_y) + 2 * MARGIN) * SCALE)
-
-    def px(x: float) -> float:
-        return (x - min_x + MARGIN) * SCALE
-
-    def py(y: float) -> float:
-        return (y - min_y + MARGIN) * SCALE
-
-    img = Image.new("RGB", (max(width_px, 1), max(height_px, 1)), "#ffffff")
+def render_scene_png(scene: Scene) -> bytes:
+    k = SCALE * SUPERSAMPLE
+    size = (max(int(math.ceil(scene.width * k)), 1), max(int(math.ceil(scene.height * k)), 1))
+    img = Image.new("RGB", size, "#ffffff")
     draw = ImageDraw.Draw(img)
 
-    name_font = _load_font(int(FONT_SIZE * SCALE))
-    num_font = _load_font(int(NUMBER_FONT_SIZE * SCALE))
-    title_font = _load_font(int(TITLE_FONT_SIZE * SCALE))
+    def px(p: Tuple[float, float]) -> Tuple[float, float]:
+        return (p[0] - scene.x) * k, (p[1] - scene.y) * k
 
-    heading = title or (
-        f"Decomposition of: {diagram.parent_name}" if diagram.parent_name else "Diagram"
-    )
-    draw.text((8 * SCALE, 8 * SCALE), heading, fill="#888888", font=title_font)
+    def stroke(points, color, width, dash) -> None:
+        pts = [px(p) for p in points]
+        w = max(int(round(width * k)), 1)
+        runs = _dashes(pts, dash[0] * k, dash[1] * k) if dash else [pts]
+        for run in runs:
+            if len(run) >= 2:
+                draw.line(run, fill=color, width=w, joint="curve")
 
-    line_h = (FONT_SIZE * SCALE) + LINE_GAP
-
-    for a in boxes:
-        x0, y0 = px(a.x), py(a.y)
-        x1, y1 = px(a.x + a.width), py(a.y + a.height)
-        draw.rectangle([x0, y0, x1, y1], fill="#ffffff", outline="#1a1a1a", width=2)
-
-        lines = _wrap(draw, a.name, name_font, x1 - x0)
-        block_h = len(lines) * line_h
-        cy = (y0 + y1) / 2 - block_h / 2
-        cx = (x0 + x1) / 2
-        for i, line in enumerate(lines):
-            w = _text_width(draw, line, name_font)
-            draw.text((cx - w / 2, cy + i * line_h), line, fill="#111111", font=name_font)
-
-        if a.number:
-            nw = _text_width(draw, a.number, num_font)
+    for item in scene.items:
+        if isinstance(item, Rect):
+            x0, y0 = px((item.x, item.y))
+            x1, y1 = px((item.x + item.w, item.y + item.h))
+            if item.fill:
+                draw.rectangle([x0, y0, x1, y1], fill=item.fill)
+            if item.stroke:
+                outline = [(item.x, item.y), (item.x + item.w, item.y),
+                           (item.x + item.w, item.y + item.h), (item.x, item.y + item.h),
+                           (item.x, item.y)]
+                stroke(outline, item.stroke, item.stroke_width, item.dash)
+        elif isinstance(item, Line):
+            stroke(item.points, item.color, item.width, item.dash)
+        elif isinstance(item, Poly):
+            draw.polygon([px(p) for p in item.points], fill=item.fill)
+        elif isinstance(item, Dot):
+            cx, cy = px((item.x, item.y))
+            r = item.r * k
+            draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=item.fill)
+        else:
+            x, y = px((item.x, item.y))
             draw.text(
-                (x1 - nw - 5 * SCALE, y1 - (NUMBER_FONT_SIZE * SCALE) - 4 * SCALE),
-                a.number,
-                fill="#555555",
-                font=num_font,
+                (x, y), item.text, fill=item.color,
+                font=_font(max(int(round(item.size * k)), 1)), anchor=_ANCHORS[item.anchor],
             )
 
+    final = (max(int(round(scene.width * SCALE)), 1), max(int(round(scene.height * SCALE)), 1))
+    img = img.resize(final, Image.LANCZOS)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
+
+
+def render_diagram_png(diagram: Diagram, title: str = "") -> bytes:
+    return render_scene_png(build_scene(diagram, title))
