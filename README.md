@@ -19,12 +19,25 @@ py -3 -m venv .venv
 
 ## Use it from an MCP client
 
-The repo ships a project `.mcp.json`; a client opened in this folder picks it up. Or point any
-client at the command:
+Point any MCP client at the command:
 
 ```
 command: .venv\Scripts\python.exe
 args:    src\server.py
+```
+
+A client that reads a project-level `.mcp.json` needs a file like this in the project folder
+(use the absolute paths of your own checkout; the file is git-ignored, so it stays local):
+
+```json
+{
+  "mcpServers": {
+    "ramus": {
+      "command": "<project folder>\\.venv\\Scripts\\python.exe",
+      "args": ["<project folder>\\src\\server.py"]
+    }
+  }
+}
 ```
 
 ## Tools
@@ -57,8 +70,7 @@ folder).
 ## Status
 
 Eyes work: reading models and rendering diagrams with their arrows. The "hands" (creating and
-editing activities and arrows, then saving a `.rsf` that reopens in Ramus) are on the roadmap in
-`CLAUDE.md`, together with the notes on the file format.
+editing activities and arrows, then saving a `.rsf` that reopens in Ramus) are the next milestone.
 
 ## License
 

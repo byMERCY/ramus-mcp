@@ -22,3 +22,8 @@ __pycache__/
 # Ramus models: the author's own data, and the shipped samples belong to Ramus.
 # The tests build their fixtures on the fly, so no model belongs in the repository.
 *.rsf
+
+# local working notes and this machine's client config (absolute paths):
+# kept on disk, not part of the published project
+CLAUDE.md
+.mcp.json
