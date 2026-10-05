@@ -1,0 +1,11 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# local render test outputs (not part of the project)
+/*.svg
+/*.png
+/diagram*.png
+/diagram*.svg
