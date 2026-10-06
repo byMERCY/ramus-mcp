@@ -4,8 +4,9 @@ An MCP server that gives an AI agent **eyes and hands for Ramus** — the IDEF0/
 models stored in `.rsf` files. Point Claude (or any MCP client) at it and it can open a model, read
 its activity tree and every diagram's arrows, and **see** a diagram rendered as an image — boxes,
 arrows with their heads, names, colours, dashes and tunnels, laid out exactly as Ramus stores them.
-It can **check** the model against the rules of IDEF0, and **change** it: rename activities and
-flows, add boxes and arrows — placed and routed the IDEF0 way — and save a `.rsf` that Ramus opens.
+It can **check** the model against the rules of IDEF0, and **change** it — or start one from
+nothing: rename activities and flows, add boxes and arrows — placed and routed the IDEF0 way — and
+save a `.rsf` that Ramus opens.
 
 Original work — it reads the `.rsf` **file format** directly (a ZIP of XML tables) and contains no
 Ramus code, so it needs neither the Ramus application nor Java to run. It reads files saved by both
@@ -76,6 +77,7 @@ tools, so it can be looked at before anything is written.
 
 | Tool | What it does |
 |---|---|
+| `create_model(path, activity, author?, project?)` | Start a model from nothing: a new `.rsf` with one IDEF0 model whose context diagram A-0 holds its top activity A0, written as the Ramus 3 desktop application writes a new file |
 | `rename_activity(activity, name)` | Rename a box |
 | `rename_flow(flow, name)` | Rename a flow — what an arrow carries, on every level |
 | `add_activity(parent, name, x?, y?, width?, height?)` | Add a box to a decomposition; it takes the next number, copies its neighbours' look, and without a position is placed down the IDEF0 diagonal clear of boxes, arrows and labels |

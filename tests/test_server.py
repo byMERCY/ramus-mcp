@@ -262,6 +262,22 @@ class Editing(unittest.TestCase):
         self.assertNotIn("needs_control", {f["rule"] for f in arrow["idef0"]["new"]})
         self.assertTrue({"errors", "warnings", "new", "resolved"} <= set(arrow["idef0"]))
 
+    def test_create_a_model_then_draw_on_it(self):
+        server.save_model()
+        path = os.path.join(self._dir.name, "новая.rsf")
+        made = server.create_model(path, "Провести олимпиаду", author="Тест")
+        self.assertEqual(made["sheets"], ["A-0"])
+        self.assertEqual(server.current_model()["path"], os.path.abspath(path))
+        self.assertFalse(server.current_model()["unsaved_changes"])
+        server.add_activity("A0", "Подготовить задания")
+        tree = server.get_function_tree()
+        self.assertEqual(tree[0]["number"], "A0")
+        self.assertEqual(tree[0]["children"][0]["name"], "Подготовить задания")
+        with self.assertRaisesRegex(ValueError, "unsaved changes"):
+            server.create_model(path, "Другое", overwrite=True)
+        with self.assertRaisesRegex(ValueError, "already exists"):
+            server.create_model(path, "Другое", discard_unsaved=True)
+
     def test_check_one_sheet_and_an_unknown_one(self):
         report = server.check_model("A1")
         self.assertEqual(report["checked"], "A1")
@@ -310,7 +326,7 @@ class OverStdio(unittest.TestCase):
              "get_diagram", "render_diagram", "render_diagram_svg_text",
              "rename_activity", "rename_flow", "add_activity", "add_arrow", "move_activity",
              "delete_activity", "delete_arrow", "tidy_sheet", "tidy_labels", "save_model",
-             "check_model", "join_levels"},
+             "check_model", "join_levels", "create_model"},
         )
         self.assertFalse(opened.isError)
         data = json.loads(diagram.content[0].text)

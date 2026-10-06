@@ -148,6 +148,43 @@ def text_width(text: str, size: float) -> float:
     return font.getlength(text) * size / _REFERENCE_SIZE
 
 
+# Java's "Dialog" font is Arial on Windows. Ramus measures text without fractional metrics, so
+# on a screen at 100 % each glyph's advance is rounded to a whole unit - "результаты" at 10 is
+# 56 wide there, not the 53.6 its outline says - and a name whose box is narrower is broken
+# onto another line.
+_JAVA_FACES = ("arial.ttf", "Arial.ttf", "LiberationSans-Regular.ttf")
+
+
+@lru_cache(maxsize=1)
+def _java_font():
+    try:
+        from PIL import ImageFont
+    except ImportError:  # pragma: no cover - Pillow is a requirement
+        return None
+    for name in _JAVA_FACES:
+        try:
+            return ImageFont.truetype(name, _REFERENCE_SIZE)
+        except OSError:
+            continue
+    return None
+
+
+@lru_cache(maxsize=4096)
+def _java_advance(char: str, size: float) -> float:
+    return _java_font().getlength(char) * size / _REFERENCE_SIZE
+
+
+def label_width(text: str, size: float) -> float:
+    """How wide a box an arrow name needs so that Ramus keeps it on the lines it was given:
+    the widest of the measures it may be taken by - our own face, Java's Dialog (Arial) with
+    and without its glyphs rounded - and a little room."""
+    widths = [text_width(text, size)]
+    if _java_font() is not None:
+        widths.append(_java_font().getlength(text) * size / _REFERENCE_SIZE)
+        widths.append(sum(round(_java_advance(c, size)) for c in text))
+    return max(widths) + 4.0
+
+
 def _pieces(paragraph: str, width: float, size: float) -> List[Tuple[str, str]]:
     """A paragraph as (separator, text) pieces to lay out in order.
 

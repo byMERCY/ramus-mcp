@@ -247,6 +247,39 @@ def open_model(path: str, discard_unsaved: bool = False) -> Dict[str, Any]:
 
 
 @mcp.tool()
+def create_model(path: str, activity: str, author: str = "", project: Optional[str] = None,
+                 model_name: str = "Работы", overwrite: bool = False,
+                 discard_unsaved: bool = False) -> Dict[str, Any]:
+    """Create a new Ramus model file and open it - the way to start a model from nothing.
+
+    ``path`` is the .rsf file to write; ``activity`` names the whole process as one activity, a
+    verb phrase ("Провести олимпиаду"): it is the single box A0 on the context diagram A-0.
+    ``author`` and ``project`` (by default the file's name) are what the diagram frame shows;
+    ``model_name`` is the model's name in Ramus's list of models. An existing file is
+    replaced only with overwrite (and copied to <name>.backup.rsf first).
+
+    Then: draw A0's inputs, controls, mechanisms and outputs on the context diagram (add_arrow
+    with sheet "A-0"), and decompose it - add_activity under "A0", 3 to 6 boxes - and so on
+    down. The file is written at once; later changes wait for save_model.
+    """
+    if _Open.editor is not None and _Open.editor.changed and not discard_unsaved:
+        raise ValueError(f"{_Open.path} has unsaved changes. Call save_model to keep them, "
+                         f"or create_model again with discard_unsaved=true to drop them.")
+    try:
+        editor = ModelEditor.create(path, activity, model_name, author, project, overwrite)
+    except FileExistsError as exc:
+        raise ValueError(str(exc)) from None
+    _Open.editor = editor
+    _Open.path = editor.path
+    _refresh()
+    return {"created": editor.path, "model": model_name, "top_activity": "A0",
+            "sheets": [d.node for d in _Open.diagrams],
+            "next": "Draw the context: add_arrow(sheet=\"A-0\", ...) for A0's inputs, controls, "
+                    "mechanisms and outputs; then add_activity(parent=\"A0\", ...) to "
+                    "decompose it."}
+
+
+@mcp.tool()
 def current_model() -> Dict[str, Any]:
     """Say which model is open, if any."""
     if _Open.model is None:

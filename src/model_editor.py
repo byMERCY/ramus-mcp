@@ -20,19 +20,22 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 try:
+    from . import blank_model
     from . import router as rt
     from . import visual_data as vd
     from .rsf_document import RsfDocument, Row
-    from .ramus_rsf import RsfModel
-    from .scene import text_width, wrap
+    from .ramus_rsf import FRAME_BOTTOM_RAMUS3, FRAME_LEFT, FRAME_RIGHT, FRAME_TOP, RsfModel
+    from .scene import label_width, wrap
 except ImportError:  # pragma: no cover - script execution
+    import blank_model
     import router as rt
     import visual_data as vd
     from rsf_document import RsfDocument, Row
-    from ramus_rsf import RsfModel
-    from scene import text_width, wrap
+    from ramus_rsf import FRAME_BOTTOM_RAMUS3, FRAME_LEFT, FRAME_RIGHT, FRAME_TOP, RsfModel
+    from scene import label_width, wrap
 
 TEXTS = "Core/attribute_texts"
+FRAME_RAMUS3 = (FRAME_LEFT, FRAME_TOP, FRAME_RIGHT, FRAME_BOTTOM_RAMUS3)
 
 
 class EditError(ValueError):
@@ -46,6 +49,36 @@ class ModelEditor:
         self.path = os.path.abspath(path)
         self.doc = RsfDocument(path)
         self._backed_up = False
+
+    @classmethod
+    def create(cls, path: str, activity: str, model_name: str = blank_model.DEFAULT_MODEL,
+               author: str = "", project: Optional[str] = None,
+               overwrite: bool = False) -> "ModelEditor":
+        """Write a new model file - one IDEF0 model whose context diagram A-0 holds its top
+        activity A0, called ``activity`` - and open it. ``project`` (by default the file's
+        name) and ``author`` are what the diagram frame shows. An existing file is replaced
+        only with ``overwrite``, and then copied to ``<name>.backup.rsf`` first."""
+        activity = _clean_name(activity, "activity")
+        model_name = _clean_name(model_name, "model")
+        path = os.path.abspath(path)
+        if not path.lower().endswith(".rsf"):
+            raise EditError("A Ramus model file ends in .rsf.")
+        if os.path.exists(path):
+            if not overwrite:
+                raise FileExistsError(f"{path} already exists; pass overwrite to replace it.")
+            shutil.copy2(path, _backup_path(path))
+        if project is None:
+            project = os.path.splitext(os.path.basename(path))[0]
+        editor = cls.__new__(cls)
+        editor.path = path
+        editor.doc = blank_model.blank(model_name, author, project)
+        editor._backed_up = True
+        left, top, right, bottom = FRAME_RAMUS3
+        w, h = 150.0, 80.0
+        editor._write_box(blank_model.BASE_FUNCTION, blank_model.MODEL_QUALIFIER, activity,
+                          ((left + right - w) / 2, (top + bottom - h) / 2, w, h), None, -1)
+        editor.doc.save(path, overwrite=True)
+        return cls(path)
 
     # ------------------------------------------------------------- reading back
 
@@ -189,14 +222,30 @@ class ModelEditor:
             x, y = _free_spot(sheet, frame, w, h)
         _inside_frame(float(x), float(y), w, h, frame)
 
-        doc = self.doc
         parent_row = self._element_row(parent_id)
+        new_id = self._write_box(parent_id, int(parent_row["QUALIFIER_ID"]), name,
+                                 (float(x), float(y), w, h), template.element_id,
+                                 siblings[-1].element_id if siblings else -1,
+                                 keep_element_name=bool(parent_row.get("ELEMENT_NAME")))
+        number = (parent.number + str(len(siblings) + 1)) if parent.number != "A0" \
+            else "A" + str(len(siblings) + 1)
+        return {"id": new_id, "number": number, "name": name, "parent": parent_id,
+                "x": float(x), "y": float(y), "width": w, "height": h}
+
+    def _write_box(self, parent_id: int, qualifier_id: int, name: str, rect,
+                   template_id: Optional[int], previous_id: int,
+                   keep_element_name: bool = False) -> int:
+        """Write a new box: its element in the model's catalog, its place in the tree (last
+        after ``previous_id`` under ``parent_id``), its name and frame, and its look copied
+        from ``template_id`` (or the defaults). A parent getting its first child is given
+        diagram data of its own. Returns the new element's id."""
+        doc = self.doc
         new_id = doc.new_element_id()
         doc.add_row("elements", {
             "ELEMENT_ID": new_id,
-            "QUALIFIER_ID": int(parent_row["QUALIFIER_ID"]),
+            "QUALIFIER_ID": qualifier_id,
             # Ramus 2 kept a copy of the name in the element row; Ramus 3 leaves it empty.
-            "ELEMENT_NAME": name if parent_row.get("ELEMENT_NAME") else "",
+            "ELEMENT_NAME": name if keep_element_name else "",
         }, lenient=True)
 
         hier = doc.table("Core/attribute_hierarchicals")
@@ -207,36 +256,33 @@ class ModelEditor:
             "ELEMENT_ID": new_id,
             "ICON_ID": int(template_hier.get("ICON_ID", "-1") or -1),
             "PARENT_ELEMENT_ID": parent_id,
-            "PREVIOUS_ELEMENT_ID": siblings[-1].element_id if siblings else -1,
+            "PREVIOUS_ELEMENT_ID": previous_id,
         }, lenient=True)
 
-        self._set_text(new_id, self._name_attribute(parent_id), name)
+        x, y, w, h = rect
+        self._set_text(new_id, self._name_attribute(new_id), name)
         self._add_value("IDEF0/attribute_rectangles", "F_BOUNDS", new_id,
                         {"X": float(x), "Y": float(y), "WIDTH": w, "HEIGHT": h})
         self._add_value("IDEF0/attribute_statuses", "F_STATUS", new_id,
                         {"TYPE": 0, "OTHER_NAME": ""})
-        self._copy_value("IDEF0/attribute_fonts", "F_FONT", template.element_id, new_id,
+        self._copy_value("IDEF0/attribute_fonts", "F_FONT", template_id, new_id,
                          ("NAME", "SIZE", "STYLE"), {"NAME": "Dialog", "SIZE": 10, "STYLE": 0})
-        self._copy_value("IDEF0/attribute_function_types", "F_TYPE", template.element_id, new_id,
+        self._copy_value("IDEF0/attribute_function_types", "F_TYPE", template_id, new_id,
                          ("TYPE",), {"TYPE": 1})
-        self._copy_value("IDEF0/attribute_colors", "F_BACKGROUND", template.element_id, new_id,
+        self._copy_value("IDEF0/attribute_colors", "F_BACKGROUND", template_id, new_id,
                          ("COLOR",), {"COLOR": -1})
-        self._copy_value("IDEF0/attribute_colors", "F_FOREGROUND", template.element_id, new_id,
+        self._copy_value("IDEF0/attribute_colors", "F_FOREGROUND", template_id, new_id,
                          ("COLOR",), {"COLOR": -16777216})
         if doc.has_table("IDEF0/attribute_decomposition_types"):
             self._copy_value("IDEF0/attribute_decomposition_types", "F_DECOMPOSITION_TYPE",
-                             template.element_id, new_id, ("TYPE",), {"TYPE": -1})
+                             template_id, new_id, ("TYPE",), {"TYPE": -1})
         # A box with no decomposition: Ramus 3 stores no diagram data for it, Ramus 2 an
         # empty diagram.
         self._add_value("IDEF0/attribute_visual_datas", "F_VISUAL_DATA", new_id,
                         {"DATA": b"" if self._version() == 2 else _EMPTY_V1})
-        if not siblings:
+        if previous_id == -1:
             self._give_a_decomposition(parent_id)
-
-        number = (parent.number + str(len(siblings) + 1)) if parent.number != "A0" \
-            else "A" + str(len(siblings) + 1)
-        return {"id": new_id, "number": number, "name": name, "parent": parent_id,
-                "x": float(x), "y": float(y), "width": w, "height": h}
+        return new_id
 
     def _version(self) -> int:
         """2 for a Ramus 3 file (arrow routes in tables), 1 for Ramus 2 (routes in blobs)."""
@@ -264,15 +310,16 @@ class ModelEditor:
         row.update(values)
         self.doc.add_row(table, row, lenient=True)
 
-    def _copy_value(self, table: str, attribute: str, source_id: int, element_id: int,
+    def _copy_value(self, table: str, attribute: str, source_id: Optional[int], element_id: int,
                     columns, default: Dict[str, object]) -> None:
-        """Give ``element_id`` the same value ``source_id`` has, or the default if it has none."""
+        """Give ``element_id`` the same value ``source_id`` has, or the default if it has none
+        (or there is no source)."""
         if not self.doc.has_table(table):
             return
         attr = self.doc.attribute_id(attribute)
         if attr is None:
             return
-        source = self._live_value_row(table, attr, source_id)
+        source = self._live_value_row(table, attr, source_id) if source_id is not None else None
         t = self.doc.table(table)
         values: Dict[str, object] = {}
         for c in columns:
@@ -679,8 +726,9 @@ class ModelEditor:
             "OTHER_ELEMENT": other}, lenient=True)
 
     def _sheet_style(self, sheet_id: int) -> object:
-        """The look most arrows on this sheet have (else in the file), as stored; a plain thin
-        black line in Dialog 10 if the file has no arrow to copy."""
+        """The look most arrows on this sheet have (else in the file), as stored; if the file
+        has no arrow to copy, a plain thin black line named in Dialog 8 - what Ramus gives a
+        new arrow."""
         owner_attr = self.doc.attribute_id("F_FUNCTION_SECTOR")
         on_sheet = {r["ELEMENT_ID"] for r in self.doc.table("Core/attribute_other_elements").rows
                     if owner_attr is not None and r.get("ATTRIBUTE_ID") == str(owner_attr)
@@ -697,7 +745,7 @@ class ModelEditor:
         for pool in (counts, everywhere):
             if pool:
                 return max(pool, key=pool.get)  # the masked hex text, copied as is
-        return vd.encode_sector_style()
+        return vd.encode_sector_style(font=("Dialog", 8, 0))
 
     def _partner(self, spec, which: str, sheet, sheets, acts, stream: Optional[int],
                  label: str) -> Optional[Tuple[int, int, Optional[int]]]:
@@ -1801,7 +1849,7 @@ def _place_label(text: str, size: float, points, boxes, labels, frame_rect, line
         tilde = gap is not None
         for wrap_width in (_LABEL_WRAP, 75.0, 50.0):
             rows = wrap(text, wrap_width, size) or [text]
-            w = max(text_width(row, size) for row in rows) + 4.0
+            w = max(label_width(row, size) for row in rows)
             h = len(rows) * _LINE_HEIGHT * size
             for a, b in pieces:
                 mx, my = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
