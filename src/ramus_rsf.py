@@ -177,6 +177,7 @@ class Arrow:
     label: Optional[Label] = None
     color: Optional[str] = None  # "#rrggbb"; None = the default black
     width: float = 1.0
+    dash: Optional[Tuple[float, ...]] = None  # stroke dash pattern; None = solid
     font_size: float = 10.0
     flow: int = 0  # arrows with the same flow number are branches/joins of one flow
 
@@ -615,6 +616,7 @@ class RsfModel:
                 label=label,
                 color=style.color.hex() if style.color else None,
                 width=style.stroke.width if style.stroke and style.stroke.kind == "basic" else 1.0,
+                dash=_dash_of(style.stroke),
                 font_size=float(style.font.size) if style.font else 10.0,
             )
             alt = row.get("ALTERNATIVE_TEXT")
@@ -691,6 +693,15 @@ def _argb_hex(value: Optional[str]) -> Optional[str]:
     except ValueError:
         return None
     return f"#{argb & 0xFFFFFF:06x}"
+
+
+def _dash_of(stroke: Optional[vd.Stroke]) -> Optional[Tuple[float, ...]]:
+    """A stroke's dash pattern, if it has a usable one (all lengths positive, not all zero)."""
+    if stroke is None or stroke.kind != "basic" or not stroke.dash:
+        return None
+    if any(d < 0 for d in stroke.dash) or not any(d > 0 for d in stroke.dash):
+        return None
+    return tuple(stroke.dash)
 
 
 def _style(row: Dict[str, Optional[str]]) -> vd.SectorStyle:

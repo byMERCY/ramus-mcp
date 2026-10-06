@@ -32,7 +32,7 @@ def _points(points) -> str:
 
 
 def _dash(dash) -> str:
-    return f' stroke-dasharray="{_num(dash[0])} {_num(dash[1])}"' if dash else ""
+    return f' stroke-dasharray="{" ".join(_num(d) for d in dash)}"' if dash else ""
 
 
 def _element(item: Item) -> str:

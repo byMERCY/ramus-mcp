@@ -37,10 +37,20 @@ def _font(pixels: int):
     return ImageFont.truetype(path, pixels)
 
 
-def _dashes(points: List[Tuple[float, float]], on: float, off: float):
-    """Cut a polyline into the visible pieces of a dashed line."""
+def _dashes(points: List[Tuple[float, float]], pattern):
+    """Cut a polyline into the visible pieces of a dashed line.
+
+    ``pattern`` is dash, gap, dash, gap ... lengths; an odd-length one is repeated twice over,
+    the way Java's BasicStroke and SVG read it.
+    """
+    pattern = [p for p in pattern]
+    if len(pattern) % 2:
+        pattern = pattern * 2
+    if not pattern or not any(p > 0 for p in pattern):
+        return [points]
     pieces: List[List[Tuple[float, float]]] = []
-    drawing, remaining = True, on
+    index, drawing = 0, True
+    remaining = pattern[0]
     current = [points[0]]
     for a, b in zip(points, points[1:]):
         length = math.dist(a, b)
@@ -57,12 +67,16 @@ def _dashes(points: List[Tuple[float, float]], on: float, off: float):
             remaining -= step
             if remaining <= 1e-9:
                 if drawing:
-                    pieces.append(current)
+                    if len(current) > 1:
+                        pieces.append(current)
                     current = []
                 else:
                     current = [point]
-                drawing = not drawing
-                remaining = on if drawing else off
+                index = (index + 1) % len(pattern)
+                drawing = index % 2 == 0
+                remaining = pattern[index]
+                if drawing and not current:
+                    current = [point]
     if drawing and len(current) > 1:
         pieces.append(current)
     return pieces
@@ -80,7 +94,7 @@ def render_scene_png(scene: Scene) -> bytes:
     def stroke(points, color, width, dash) -> None:
         pts = [px(p) for p in points]
         w = max(int(round(width * k)), 1)
-        runs = _dashes(pts, dash[0] * k, dash[1] * k) if dash else [pts]
+        runs = _dashes(pts, [d * k for d in dash]) if dash else [pts]
         for run in runs:
             if len(run) >= 2:
                 draw.line(run, fill=color, width=w, joint="curve")

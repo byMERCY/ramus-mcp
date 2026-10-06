@@ -11,7 +11,7 @@ from PIL import Image
 import render_png
 import render_svg
 import scene as sc
-from ramus_rsf import RsfModel
+from ramus_rsf import Arrow, End, RsfModel
 
 
 class Wrapping(unittest.TestCase):
@@ -74,10 +74,30 @@ class Geometry(unittest.TestCase):
             self.assertTrue(all(p[0] > 0.0 for p in b.points))
 
     def test_dashes_cut_a_line_into_its_visible_pieces(self):
-        pieces = render_png._dashes([(0.0, 0.0), (100.0, 0.0)], 10.0, 10.0)
+        pieces = render_png._dashes([(0.0, 0.0), (100.0, 0.0)], [10.0, 10.0])
         self.assertEqual(len(pieces), 5)
         for piece in pieces:
             self.assertAlmostEqual(piece[-1][0] - piece[0][0], 10.0)
+
+    def test_a_longer_dash_pattern_repeats_in_order(self):
+        # dash 10, gap 5, dot 2, gap 5: one period is 22 long
+        pieces = render_png._dashes([(0.0, 0.0), (44.0, 0.0)], [10.0, 5.0, 2.0, 5.0])
+        lengths = [round(p[-1][0] - p[0][0], 6) for p in pieces]
+        self.assertEqual(lengths, [10.0, 2.0, 10.0, 2.0])
+        self.assertAlmostEqual(pieces[1][0][0], 15.0)
+
+    def test_an_odd_dash_pattern_is_read_twice_over(self):
+        # [4] means dash 4, gap 4
+        pieces = render_png._dashes([(0.0, 0.0), (16.0, 0.0)], [4.0])
+        self.assertEqual([(p[0][0], p[-1][0]) for p in pieces], [(0.0, 4.0), (8.0, 12.0)])
+
+    def test_an_arrow_drawn_dashed_in_the_file_is_drawn_dashed(self):
+        arrow = Arrow(sector_id=1, stream_id=None, name="", start=End("open"), end=End("open"),
+                      points=[(0.0, 0.0), (50.0, 0.0)], dash=(10.0, 10.0))
+        line = sc._arrow(arrow)[0]
+        self.assertEqual(line.dash, (10.0, 10.0))
+        self.assertIn('stroke-dasharray="10 10"', render_svg.render_scene(
+            sc.Scene(x=0, y=0, width=60, height=10, items=[line])))
 
 
 class _Tiny:

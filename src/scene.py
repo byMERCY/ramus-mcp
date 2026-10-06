@@ -26,7 +26,9 @@ except ImportError:  # pragma: no cover - script execution
 
 
 Point = Tuple[float, float]
-Dash = Optional[Tuple[float, float]]  # (dash length, gap length) or None for solid
+# A dash pattern - dash, gap, dash, gap ... lengths, repeated (an odd-length list repeats
+# twice over, as in Java's BasicStroke and SVG) - or None for a solid line.
+Dash = Optional[Tuple[float, ...]]
 
 # The look. Arrowhead size is Ramus's: a triangle 8 long and 6 wide.
 HEAD_LENGTH = 8.0
@@ -302,7 +304,7 @@ def _arrow(arrow: Arrow) -> List[Item]:
         return []
     stub = arrow.geometry == "stub"
     color = arrow.color or (STUB_COLOR if stub else "#000000")
-    dash: Dash = (5.0, 3.0) if stub else None
+    dash: Dash = (5.0, 3.0) if stub else arrow.dash
     items: List[Item] = [Line(list(arrow.points), color, max(arrow.width, MIN_LINE_WIDTH), dash)]
     # Ramus puts a head wherever the segment ends on something: a box side, the frame, or
     # nothing at all. Where it ends on a junction the flow goes on, so there is no head.
