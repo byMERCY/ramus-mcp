@@ -210,6 +210,29 @@ class Editing(unittest.TestCase):
     def test_flows_carry_their_stream_id_for_the_editing_tools(self):
         flows = server.get_diagram(node="A0")["flows"]
         self.assertTrue(all("stream" in f for f in flows))
+        self.assertTrue(all(f["segments"] for f in flows))
+
+    def test_move_a_box_by_number_and_its_arrows_follow(self):
+        result = server.move_activity("A2", y=240)
+        self.assertEqual(result["number"], "A2")
+        box = next(a for a in server.get_diagram(node="A0")["activities"] if a["number"] == "A2")
+        self.assertEqual(box["y"], 240.0)
+        self.assertTrue(result["rerouted"])
+
+    def test_delete_a_box_and_the_next_one_moves_up(self):
+        server.add_activity("A0", "Проверить")
+        result = server.delete_activity("A2")
+        self.assertEqual([a["number"] for a in result["removed_activities"]], ["A2"])
+        numbers = [a["number"] for a in server.get_diagram(node="A0")["activities"]]
+        self.assertEqual(numbers, ["A1", "A2"])
+        self.assertEqual(server.get_function_tree()[0]["children"][1]["name"], "Проверить")
+
+    def test_delete_an_arrow_by_its_segment_id(self):
+        flow = next(f for f in server.get_diagram(node="A0")["flows"] if f["name"] == "результат")
+        result = server.delete_arrow(flow["segments"][0])
+        self.assertTrue(result["removed_arrows"])
+        names = [f["name"] for f in server.get_diagram(node="A0")["flows"]]
+        self.assertNotIn("результат", names)
 
 
 @unittest.skipIf(server is None, "mcp package not installed")
@@ -243,7 +266,8 @@ class OverStdio(unittest.TestCase):
             {t.name for t in tools.tools},
             {"open_model", "current_model", "list_diagrams", "get_function_tree",
              "get_diagram", "render_diagram", "render_diagram_svg_text",
-             "rename_activity", "rename_flow", "add_activity", "add_arrow", "save_model"},
+             "rename_activity", "rename_flow", "add_activity", "add_arrow", "move_activity",
+             "delete_activity", "delete_arrow", "save_model"},
         )
         self.assertFalse(opened.isError)
         data = json.loads(diagram.content[0].text)

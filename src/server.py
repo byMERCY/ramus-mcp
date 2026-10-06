@@ -1,8 +1,9 @@
 """ramus-mcp — an MCP server that gives an agent eyes and hands for Ramus .rsf models.
 
 Eyes: open a model, list its diagrams, read the activity tree and each diagram's arrows as data,
-and render a diagram to PNG so the agent can look at it. Hands: rename activities and flows, add
-boxes and arrows - laid out and routed the IDEF0 way - and save a .rsf that Ramus reopens.
+and render a diagram to PNG so the agent can look at it. Hands: rename activities and flows, add,
+move and delete boxes, draw and delete arrows - laid out and routed the IDEF0 way - and save a
+.rsf that Ramus reopens.
 
 Every reading tool shows the model as it stands, unsaved changes included, so a change can be
 looked at before it is written. Nothing is written until save_model.
@@ -171,6 +172,7 @@ def _flow_rows(d: Diagram) -> List[Dict[str, Any]]:
                 "name": " | ".join(names),
                 "from": [_end_row(a.start) for a in arrows if a.start.kind != "junction"],
                 "to": [_end_row(a.end) for a in arrows if a.end.kind != "junction"],
+                "segments": [a.sector_id for a in arrows],
             }
         )
     return rows
@@ -391,6 +393,45 @@ def add_arrow(sheet: str, source: Dict[str, Any], target: Dict[str, Any],
     _require()
     return _edited(_Open.editor.add_arrow(_sheet_id(sheet), _end_ref(source), _end_ref(target),
                                           name, None if flow is None else int(flow)))
+
+
+@mcp.tool()
+def move_activity(activity: str, x: Optional[float] = None, y: Optional[float] = None,
+                  width: Optional[float] = None, height: Optional[float] = None) -> Dict[str, Any]:
+    """Move an activity box on its sheet, resize it, or both - ``activity`` is its number
+    ("A12") or id; whatever of x, y, width, height is left out stays as it is (units as
+    get_diagram reports them).
+
+    Its arrows go with it: each is routed again, its end keeping its place along the box's side
+    or lining up with the other end for a straight line. An arrow the box now lands on is
+    routed round it and a name it now covers is moved off. Refused if the box would overlap
+    another or leave the sheet.
+    """
+    _require()
+    return _edited(_Open.editor.move_activity(_activity_id(activity), x, y, width, height))
+
+
+@mcp.tool()
+def delete_activity(activity: str, with_decomposition: bool = False) -> Dict[str, Any]:
+    """Delete an activity box - ``activity`` is its number ("A12") or id - with every arrow
+    that ended on it; a piece of arrow left leading nowhere goes too. The boxes after it move
+    up a number. A box with a decomposition of its own is deleted only with
+    ``with_decomposition``, and then everything under it goes as well. Arrows on another
+    level that continued a deleted one are listed: they are tunnels now (unbalanced).
+    """
+    _require()
+    return _edited(_Open.editor.delete_activity(_activity_id(activity), with_decomposition))
+
+
+@mcp.tool()
+def delete_arrow(segment: int) -> Dict[str, Any]:
+    """Delete one arrow segment - its id is in get_diagram's ``segments`` for each flow (or
+    ``id`` with include_routes). As in Ramus, a piece left leading nowhere goes with it: the
+    trunk of a fork whose last branch this was, the branches of a fork whose trunk this was.
+    The flow stays in the model, so it can be drawn again by its stream id.
+    """
+    _require()
+    return _edited(_Open.editor.delete_arrow(int(segment)))
 
 
 @mcp.tool()

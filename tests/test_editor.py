@@ -378,12 +378,12 @@ class Arrows(unittest.TestCase):
         self.assertEqual(self.editor._stream_names()[r["stream"]], "исполнитель")
 
     def test_an_existing_flow_can_be_drawn_again_by_id(self):
-        before = len(self.editor.doc.table("elements").rows)
+        streams = set(self.editor._stream_names())
         r = self.editor.add_arrow(fx.TOP, {"activity": fx.C1},
                                   {"activity": fx.C2, "role": "control"}, flow=fx.S_RESULT)
         self.assertEqual(r["stream"], fx.S_RESULT)
         self.assertEqual(r["name"], "результат")
-        self.assertEqual(len(self.editor.doc.table("elements").rows), before + 1)  # the sector only
+        self.assertEqual(set(self.editor._stream_names()), streams)  # no new flow
 
     def test_a_frame_arrow_joins_the_same_flow_left_unfinished_on_the_level_above(self):
         r = self.editor.add_arrow(fx.C1, {"frame": "input"},
@@ -398,6 +398,41 @@ class Arrows(unittest.TestCase):
         r = self.editor.add_arrow(fx.C1, {"activity": fx.G1}, {"frame": "output"}, "отчёт")
         self.assertEqual(r["joined_to_other_level"], [])
         self.assertEqual(self._arrow(r["sector"]).end.tunnel, "hard")
+
+    def test_an_undecomposed_box_gets_the_arrow_to_be_of_its_decomposition(self):
+        # C2 has no sheet of its own: as in Ramus 3, the arrow gets a hidden twin on C2's
+        # future sheet - same flow, same node, from the matching frame side, other end open.
+        r = self.editor.add_arrow(fx.TOP, {"activity": fx.C1},
+                                  {"activity": fx.C2, "role": "control"}, "указание")
+        sectors = self.editor._live_sectors()
+        twins = [s for s, info in sectors.items() if info["sheet"] == fx.C2]
+        self.assertEqual(len(twins), 1)
+        twin = sectors[twins[0]]
+        self.assertEqual(twin["start"], sectors[r["sector"]]["end"])
+        self.assertTrue(twin["start_frame"])
+        self.assertIsNone(twin["end"])
+        pts = [(float(p["X_POSITION"]), float(p["Y_POSITION"])) for p in self._points(twins[0])]
+        self.assertEqual(pts[0][1], 7.0)                  # on the top of the frame
+        self.assertEqual(pts[1], (pts[0][0], 37.0))       # 30 in
+        # C1 is decomposed: its end joins nothing hidden (it would join a real arrow there).
+        self.assertFalse(any(info["sheet"] == fx.C1 and info["start"] == sectors[r["sector"]]["start"]
+                             for info in sectors.values()))
+
+    def test_drawing_down_the_arrow_that_came_with_a_decomposition_takes_its_stub(self):
+        self.editor.add_arrow(fx.TOP, {"activity": fx.C1},
+                              {"activity": fx.C2, "role": "control"}, "указание")
+        child = self.editor.add_activity(fx.C2, "Принять указание")["id"]
+        stub = next(a for a in self._sheet(fx.C2).arrows)
+        self.assertEqual(stub.end.kind, "open")           # shows on the new sheet as a stub
+        r = self.editor.add_arrow(fx.C2, {"frame": "control"},
+                                  {"activity": child, "role": "control"}, "указание")
+        self.assertEqual(r["joined_to_other_level"], ["source"])
+        self.assertEqual([a.sector_id for a in self._sheet(fx.C2).arrows], [r["sector"]])
+        self.assertEqual(self._arrow(r["sector"]).start.node, stub.start.node)
+
+    def _points(self, sector):
+        return sorted(self.editor.doc.table("IDEF0/attribute_sector_points").where(ELEMENT_ID=sector),
+                      key=lambda p: int(p["POSITION"]))
 
     def test_the_name_is_placed_clear_of_the_boxes(self):
         r = self.editor.add_arrow(fx.TOP, {"activity": fx.C1},
@@ -434,6 +469,198 @@ class Arrows(unittest.TestCase):
             editor.add_arrow(a0.element_id, {"activity": kids[0].element_id},
                              {"activity": kids[1].element_id, "role": "input"}, "x")
         self.assertIn("Ramus 3", str(caught.exception))
+
+
+def _pieces(points):
+    return list(zip(points, points[1:]))
+
+
+def _seg_rect(p, q):
+    return (min(p[0], q[0]), min(p[1], q[1]), abs(p[0] - q[0]), abs(p[1] - q[1]))
+
+
+class _OnTiny(unittest.TestCase):
+    """The fixture's A0 sheet: frame -> C1 input (30); C1 output -> junction (31), which forks
+    to C2's input (32) and to the frame (33); frame -> C2 control (34); C2 output -> open end
+    (35). C1 is decomposed; on its sheet 40 continues 31's start node."""
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self._dir.name, "tiny.rsf")
+        fx.tiny_model(self.path)
+        self.editor = ModelEditor(self.path)
+
+    def tearDown(self):
+        self._dir.cleanup()
+
+    def _model(self) -> RsfModel:
+        return self.editor.snapshot()
+
+    def _sheet(self, parent_id):
+        return next(d for d in self._model().diagrams() if d.parent_id == parent_id)
+
+    def _arrows(self):
+        return {a.sector_id: a for d in self._model().diagrams() for a in d.arrows}
+
+    def _points_rows(self, sector):
+        return sorted(self.editor.doc.table("IDEF0/attribute_sector_points").where(ELEMENT_ID=sector),
+                      key=lambda r: int(r["POSITION"]))
+
+
+class Moving(_OnTiny):
+
+    def test_a_moved_box_reads_back_where_it_was_put(self):
+        result = self.editor.move_activity(fx.C2, y=240)
+        self.assertEqual((result["x"], result["y"]), (300.0, 240.0))
+        c2 = self._model().activities()[fx.C2]
+        self.assertEqual((c2.x, c2.y, c2.width, c2.height), (300.0, 240.0, 100.0, 60.0))
+        self.assertEqual(sorted(r["sector"] for r in result["rerouted"]), [32, 34, 35])
+
+    def test_its_arrows_follow_it_and_keep_their_roles(self):
+        self.editor.move_activity(fx.C2, x=320, y=240)
+        arrows = self._arrows()
+        box = (320.0, 240.0, 100.0, 60.0)
+        self.assertEqual(arrows[32].points[-1][0], 320.0)         # input: on the left side
+        self.assertTrue(240.0 < arrows[32].points[-1][1] < 300.0)
+        self.assertEqual(arrows[34].points[-1][1], 240.0)         # control: on the top
+        self.assertEqual(arrows[34].points[0][1], 7.0)            # ... still from the frame top
+        self.assertEqual(arrows[35].points[0][0], 420.0)          # output: off the right side
+        self.assertEqual(arrows[35].points[-1], (450.0, 150.0))   # an open end stays put
+        for s in (32, 34, 35):
+            pts = arrows[s].points
+            for p, q in _pieces(pts):
+                self.assertTrue(p[0] == q[0] or p[1] == q[1], (s, p, q))
+                self.assertFalse(_touches(_seg_rect(p, q), (box[0] + 1, box[1] + 1, 98, 58)),
+                                 f"{s} runs through the box")
+            self.assertEqual(arrows[s].start.kind, {32: "junction", 34: "frame", 35: "activity"}[s])
+
+    def test_an_end_on_a_node_keeps_its_place_and_its_ordinates(self):
+        before = self._points_rows(32)[0]
+        self.editor.move_activity(fx.C2, y=240)
+        after = self._points_rows(32)[0]
+        self.assertEqual((after["X_POSITION"], after["Y_POSITION"]), ("260.0", "100.0"))
+        for c in ("X_ORDINATE_ID", "Y_ORDINATE_ID", "POINT_TYPE"):
+            self.assertEqual(after[c], before[c], c)
+
+    def test_a_straight_arrow_stays_straight_when_the_box_moves_along_it(self):
+        self.editor.move_activity(fx.C2, x=330)  # sideways: the control from above still fits
+        pts = self._arrows()[34].points
+        self.assertEqual(len(pts), 2)
+        self.assertEqual(pts[0][0], pts[1][0])
+
+    def test_an_arrow_the_box_lands_on_is_routed_round_it(self):
+        box = (500.0, 70.0, 100.0, 60.0)  # straight across the line 33 runs along (y = 100)
+        result = self.editor.move_activity(fx.C2, x=box[0], y=box[1])
+        self.assertIn(33, [r["sector"] for r in result["rerouted"]])
+        pts = self._arrows()[33].points
+        self.assertEqual(pts[0], (260.0, 100.0))
+        self.assertEqual(pts[-1][0], 793.0)
+        for p, q in _pieces(pts):
+            self.assertFalse(_touches(_seg_rect(p, q), (501, 71, 98, 58)), (p, q))
+
+    def test_resizing_scales_where_the_ends_sit(self):
+        self.editor.move_activity(fx.C2, y=200, height=120)
+        end = self._arrows()[32].points[-1]
+        self.assertEqual(end[0], 300.0)
+        self.assertTrue(200.0 < end[1] < 320.0)
+
+    def test_a_label_follows_its_arrow(self):
+        self.editor.move_activity(fx.C2, y=240)
+        lb = self._arrows()[34].label
+        c2 = (300.0, 240.0, 100.0, 60.0)
+        self.assertFalse(_touches((lb.x, lb.y, lb.width, lb.height), c2))
+        self.assertGreater(lb.y, 7.0)
+
+    def test_a_box_cannot_be_moved_onto_another_or_off_the_sheet(self):
+        with self.assertRaises(EditError):
+            self.editor.move_activity(fx.C2, x=150, y=80)   # onto C1
+        with self.assertRaises(EditError):
+            self.editor.move_activity(fx.C2, x=750)         # past the right edge
+        with self.assertRaises(EditError):
+            self.editor.move_activity(fx.S_DATA, x=10)      # not a box
+
+    def test_the_moved_model_saves_and_reads_back(self):
+        self.editor.move_activity(fx.C2, x=360, y=250, width=120)
+        out = os.path.join(self._dir.name, "moved.rsf")
+        self.editor.save(out)
+        sheet = next(d for d in RsfModel(out).diagrams() if d.parent_id == fx.TOP)
+        self.assertEqual(sorted(a.sector_id for a in sheet.arrows), [30, 31, 32, 33, 34, 35, 36])
+
+
+class Deleting(_OnTiny):
+
+    def _alive(self, element_id) -> bool:
+        doc = self.editor.doc
+        return any(doc.alive(r, doc.current_branch())
+                   for r in doc.table("elements").where(ELEMENT_ID=element_id))
+
+    def test_a_branch_goes_alone_while_its_fork_still_has_another(self):
+        result = self.editor.delete_arrow(33)
+        self.assertEqual([r["sector"] for r in result["removed_arrows"]], [33])
+        self.assertFalse(self._alive(33))
+        self.assertTrue(self._alive(31) and self._alive(32))
+
+    def test_the_last_branch_takes_the_trunk_with_it(self):
+        self.editor.delete_arrow(32)
+        result = self.editor.delete_arrow(33)
+        self.assertEqual(sorted(r["sector"] for r in result["removed_arrows"]), [31, 33])
+        # 31 started on the node the arrow on C1's own sheet (40) continues: that one is
+        # now unpaired - a tunnel - and is reported so.
+        self.assertEqual([r["sector"] for r in result["left_unpaired_on_other_level"]], [40])
+
+    def test_deleting_a_trunk_takes_its_branches(self):
+        result = self.editor.delete_arrow(31)
+        self.assertEqual(sorted(r["sector"] for r in result["removed_arrows"]), [31, 32, 33])
+
+    def test_a_deleted_segment_is_marked_removed_and_its_values_go(self):
+        self.editor.delete_arrow(33)
+        doc = self.editor.doc
+        row = doc.table("elements").where(ELEMENT_ID=33)[0]
+        self.assertEqual(row["REMOVED_BRANCH_ID"], "0")   # kept, as Ramus 3 keeps it
+        for name in doc.table_names():
+            if "/attribute_" in name and doc.table(name).has("ELEMENT_ID"):
+                self.assertEqual(doc.table(name).where(ELEMENT_ID=33), [], name)
+        self.assertIn(fx.S_RESULT, self.editor._stream_names())  # the flow stays
+
+    def test_deleting_a_box_takes_the_arrows_that_ended_on_it(self):
+        result = self.editor.delete_activity(fx.C2)
+        self.assertEqual(sorted(r["sector"] for r in result["removed_arrows"]), [32, 34, 35])
+        self.assertFalse(self._alive(fx.C2))
+        sheet = self._sheet(fx.TOP)
+        self.assertEqual([a.element_id for a in sheet.activities], [fx.C1])
+        self.assertTrue(self._alive(33))  # the fork still leads to the frame
+
+    def test_the_boxes_after_it_move_up_a_number(self):
+        new = self.editor.add_activity(fx.TOP, "Проверить")["id"]
+        self.editor.delete_activity(fx.C2)
+        numbers = {a.element_id: a.number for a in self._sheet(fx.TOP).activities}
+        self.assertEqual(numbers, {fx.C1: "A1", new: "A2"})
+        place = self.editor.doc.table("Core/attribute_hierarchicals").where(ELEMENT_ID=new)[0]
+        self.assertEqual(place["PREVIOUS_ELEMENT_ID"], str(fx.GONE))  # what C2 came after
+
+    def test_a_box_with_a_decomposition_goes_only_when_asked_and_takes_it_along(self):
+        with self.assertRaises(EditError):
+            self.editor.delete_activity(fx.C1)
+        result = self.editor.delete_activity(fx.C1, with_decomposition=True)
+        self.assertEqual(sorted(r["id"] for r in result["removed_activities"]), [fx.C1, fx.G1])
+        self.assertEqual(sorted(r["sector"] for r in result["removed_arrows"]), [30, 31, 32, 33])
+        self.assertEqual(result["removed_arrows_under_it"], 2)  # 37 and 40, on C1's sheet
+        sheet = self._sheet(fx.TOP)
+        self.assertEqual([(a.element_id, a.number) for a in sheet.activities], [(fx.C2, "A1")])
+        self.assertFalse(any(d.parent_id == fx.C1 for d in self._model().diagrams()))
+
+    def test_the_top_activity_cannot_be_deleted(self):
+        with self.assertRaises(EditError):
+            self.editor.delete_activity(fx.TOP)
+
+    def test_the_model_saves_and_reads_back_after_deleting(self):
+        self.editor.delete_activity(fx.C2)
+        out = os.path.join(self._dir.name, "less.rsf")
+        self.editor.save(out)
+        model = RsfModel(out)
+        self.assertNotIn(fx.C2, model.activities())
+        sheet = next(d for d in model.diagrams() if d.parent_id == fx.TOP)
+        self.assertEqual(sorted(a.sector_id for a in sheet.arrows), [30, 31, 33, 36])
 
 
 if __name__ == "__main__":
