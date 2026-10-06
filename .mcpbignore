@@ -1,0 +1,16 @@
+# What `mcpb pack` leaves out of the extension: everything but the server, its manifest,
+# icon, pyproject/uv.lock, README and LICENSE.
+.git/
+.venv/
+.claude/
+.mcp.json
+CLAUDE.md
+__pycache__/
+*.pyc
+tests/
+tools/
+dist/
+*.rsf
+requirements.txt
+.gitignore
+.mcpbignore

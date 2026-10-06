@@ -1,0 +1,69 @@
+{
+  "$schema": "https://raw.githubusercontent.com/modelcontextprotocol/mcpb/main/schemas/mcpb-manifest-v0.4.schema.json",
+  "manifest_version": "0.4",
+  "name": "ramus-mcp",
+  "display_name": "Ramus IDEF0",
+  "version": "1.0.0",
+  "description": "Read, see, check, edit and create Ramus IDEF0 models (.rsf) - Claude's eyes and hands for Ramus.",
+  "long_description": "Claude opens a Ramus model, reads its activity tree and arrows, and sees each diagram as a picture. It checks the model against the rules of IDEF0 - controls and outputs on every box, ICOM balance between levels, 3 to 6 boxes on a sheet, verbs for activities and nouns for arrows - changes it, with boxes and arrows placed and routed the IDEF0 way, or builds a new model from nothing, and saves a .rsf that Ramus opens. It works on the file format itself: neither Ramus nor Java is needed.\n\nКоннектор, через который Клод читает, рисует, проверяет по правилам IDEF0, правит и создаёт с нуля модели Ramus (.rsf).",
+  "author": {
+    "name": "byMERCY",
+    "url": "https://github.com/byMERCY"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/byMERCY/ramus-mcp"
+  },
+  "icon": "icon.png",
+  "server": {
+    "type": "uv",
+    "entry_point": "src/server.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": ["run", "--directory", "${__dirname}", "src/server.py"],
+      "env": {
+        "RAMUS_MODELS_DIR": "${user_config.models_dir}"
+      }
+    }
+  },
+  "user_config": {
+    "models_dir": {
+      "type": "directory",
+      "title": "Models folder",
+      "description": "Where your Ramus models (.rsf) are. Claude looks for models here, and a model named without a full path is taken from here.",
+      "required": false,
+      "default": "${DOCUMENTS}"
+    }
+  },
+  "tools": [
+    {"name": "list_models", "description": "Find the .rsf models in the models folder or another one."},
+    {"name": "open_model", "description": "Open a model to work on."},
+    {"name": "create_model", "description": "Create a new model from nothing: a context diagram with its top activity."},
+    {"name": "current_model", "description": "Say which model is open and whether it has unsaved changes."},
+    {"name": "list_diagrams", "description": "List the model's diagrams."},
+    {"name": "get_function_tree", "description": "The whole activity tree with IDEF0 numbers."},
+    {"name": "get_diagram", "description": "One diagram as data: boxes, arrows with their ICOM roles, free text."},
+    {"name": "render_diagram", "description": "One diagram drawn as a picture."},
+    {"name": "render_diagram_svg_text", "description": "One diagram as an SVG document."},
+    {"name": "check_model", "description": "Check the model against the rules of IDEF0, with the fix for each finding."},
+    {"name": "rename_activity", "description": "Rename an activity."},
+    {"name": "rename_flow", "description": "Rename what an arrow carries, on every level."},
+    {"name": "add_activity", "description": "Add an activity box to a decomposition."},
+    {"name": "add_arrow", "description": "Draw an arrow - between boxes, to or from the frame, as a fork or a join - routed the IDEF0 way."},
+    {"name": "move_activity", "description": "Move or resize a box; its arrows follow."},
+    {"name": "delete_activity", "description": "Delete a box with its arrows."},
+    {"name": "delete_arrow", "description": "Delete an arrow segment."},
+    {"name": "join_levels", "description": "Tie an arrow to its continuation on the level below."},
+    {"name": "tidy_sheet", "description": "Lay a diagram's arrows out again, cleaner."},
+    {"name": "tidy_labels", "description": "Move arrow names that are in the way."},
+    {"name": "save_model", "description": "Write the changes to the model file, or to a copy."}
+  ],
+  "keywords": ["ramus", "idef0", "business process", "process modeling", "diagram", "rsf"],
+  "license": "MIT",
+  "compatibility": {
+    "platforms": ["win32", "darwin", "linux"],
+    "runtimes": {
+      "python": ">=3.12"
+    }
+  }
+}

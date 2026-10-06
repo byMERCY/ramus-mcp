@@ -4,11 +4,15 @@ __pycache__/
 *.pyc
 *.pyo
 
-# local render test outputs (not part of the project)
+# local render test outputs (not part of the project) - but the extension's icon is
 /*.svg
 /*.png
+!/icon.png
 /diagram*.png
 /diagram*.svg
+
+# built extensions (tools/build_mcpb.py)
+dist/
 
 # secrets and certificates
 .env
