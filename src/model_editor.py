@@ -560,6 +560,74 @@ class ModelEditor:
         })
         return sector
 
+    # ------------------------------------------------------------ joining levels
+
+    def join_levels(self, first: int, second: int) -> Dict[str, object]:
+        """Join an arrow on a box to the arrow on the frame of that box's decomposition when
+        both are drawn but neither continues the other - each a tunnel, the levels out of
+        balance. The end on the box and the end on the frame are given one node: that is how
+        Ramus carries an arrow from one level to the next. The two segments may be named in
+        either order; they must carry the same flow and meet the same side (the box's above,
+        the frame's below)."""
+        model = self.snapshot()
+        sheets = {d.parent_id: d for d in model.diagrams()}
+        where = {a.sector_id: (a, d) for d in sheets.values() for a in d.arrows}
+        for s in (first, second):
+            if s not in where:
+                raise EditError(f"There is no arrow segment {s} on any sheet. get_diagram lists "
+                                f"each flow's segments.")
+        acts = model.activities()
+
+        def pairing(up: int, down: int):
+            (ua, us), (da, ds) = where[up], where[down]
+            box = acts.get(ds.parent_id)  # the box the lower sheet decomposes
+            if box is None or box.parent_id != us.parent_id:
+                return None
+            for ue, de in ((ua.end, da.start), (ua.start, da.end)):
+                if ue.kind == "activity" and ue.activity_id == box.element_id \
+                        and de.kind == "frame":
+                    return ua, us, ue, da, ds, de, box
+            return None
+
+        found = pairing(first, second) or pairing(second, first)
+        if found is None:
+            raise EditError(f"Segments {first} and {second} are not an arrow on a box and an "
+                            f"arrow on the frame of that box's own decomposition, meeting the "
+                            f"same way (into the box and in from the frame, or out of the box "
+                            f"and out through the frame).")
+        ua, us, ue, da, ds, de, box = found
+        if ue.side != de.side:
+            raise EditError(f"«{ua.name}» is {_a(ue.role)} of {box.number} on {us.node} but "
+                            f"«{da.name}» comes onto {ds.node} as {_a(de.role)}; an arrow keeps "
+                            f"its role from one level to the next.")
+        if ua.stream_id != da.stream_id:
+            raise EditError(f"The two carry different flows - «{ua.name}» ({ua.stream_id}) and "
+                            f"«{da.name}» ({da.stream_id}). Redraw the lower one with "
+                            f"add_arrow(flow={ua.stream_id}) instead.")
+        if ue.node is not None and ue.node == de.node:
+            raise EditError(f"Segments {ua.sector_id} and {da.sector_id} are already joined.")
+        nodes = model.nodes()
+        for end, other_sheet in ((ue, ds), (de, us)):
+            for sid, _ in nodes.get(end.node, []) if end.node is not None else []:
+                hit = where.get(sid)
+                if hit is not None and hit[1] is other_sheet:
+                    raise EditError(f"Segment {ua.sector_id if end is ue else da.sector_id} is "
+                                    f"already continued on {other_sheet.node} by segment {sid}.")
+
+        node = ue.node
+        if node is None:
+            node = self.doc.new_crosspoint()
+            self._set_value("IDEF0/attribute_sector_borders",
+                            "F_SECTOR_BORDER_END" if ue is ua.end else "F_SECTOR_BORDER_START",
+                            ua.sector_id, {"CROSSPOINT": node})
+        self._set_value("IDEF0/attribute_sector_borders",
+                        "F_SECTOR_BORDER_START" if de is da.start else "F_SECTOR_BORDER_END",
+                        da.sector_id, {"CROSSPOINT": node})
+        return {"joined": [ua.sector_id, da.sector_id], "node": node, "stream": ua.stream_id,
+                "name": ua.name, "role": ue.role,
+                "above": {"sheet": us.node, "activity": box.number, "segment": ua.sector_id},
+                "below": {"sheet": ds.node, "segment": da.sector_id}}
+
     # ---- arrow helpers
 
     def _require_qualifier(self, name: str) -> int:
@@ -1305,6 +1373,12 @@ _STUB_LENGTH = 30.0  # an inherited stub on an undecomposed box's sheet, as Ramu
 
 def rt_side_name(side: int) -> str:
     return _SIDE_NAMES[side]
+
+
+def _a(role: Optional[str]) -> str:
+    """"an input", "a control" ..."""
+    role = role or "end"
+    return f"an {role}" if role[0] in "aeiou" else f"a {role}"
 
 
 @dataclass

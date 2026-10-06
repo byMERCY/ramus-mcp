@@ -242,6 +242,23 @@ class Editing(unittest.TestCase):
         forked = next(f for f in server.get_diagram(node="A0")["flows"] if f["stream"] == fx.S_DATA)
         self.assertIn("A2", [e.get("number") for e in forked["to"]])
 
+    def test_check_the_model_then_join_what_it_says_and_check_again(self):
+        report = server.check_model()
+        self.assertGreater(report["errors"], 0)
+        self.assertEqual(report["errors"] + report["warnings"], len(report["findings"]))
+        (unjoined,) = [f for f in report["findings"] if f["rule"] == "not_joined"]
+        self.assertEqual(unjoined["fix"], "join_levels(first=30, second=37)")
+        server.join_levels(30, 37)
+        self.assertFalse([f for f in server.check_model()["findings"] if f["rule"] == "not_joined"])
+        self.assertTrue(server.current_model()["unsaved_changes"])
+
+    def test_check_one_sheet_and_an_unknown_one(self):
+        report = server.check_model("A1")
+        self.assertEqual(report["checked"], "A1")
+        self.assertEqual({f["sheet"] for f in report["findings"]}, {"A1"})
+        with self.assertRaisesRegex(ValueError, "No sheet 'A9'"):
+            server.check_model("A9")
+
     def test_tidy_a_sheet_and_its_names_by_number(self):
         result = server.tidy_sheet("A0")
         self.assertEqual(result["sheet"], "A0")
@@ -282,7 +299,8 @@ class OverStdio(unittest.TestCase):
             {"open_model", "current_model", "list_diagrams", "get_function_tree",
              "get_diagram", "render_diagram", "render_diagram_svg_text",
              "rename_activity", "rename_flow", "add_activity", "add_arrow", "move_activity",
-             "delete_activity", "delete_arrow", "tidy_sheet", "tidy_labels", "save_model"},
+             "delete_activity", "delete_arrow", "tidy_sheet", "tidy_labels", "save_model",
+             "check_model", "join_levels"},
         )
         self.assertFalse(opened.isError)
         data = json.loads(diagram.content[0].text)

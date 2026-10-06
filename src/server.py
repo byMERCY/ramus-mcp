@@ -1,9 +1,9 @@
 """ramus-mcp — an MCP server that gives an agent eyes and hands for Ramus .rsf models.
 
 Eyes: open a model, list its diagrams, read the activity tree and each diagram's arrows as data,
-and render a diagram to PNG so the agent can look at it. Hands: rename activities and flows, add,
-move and delete boxes, draw and delete arrows - laid out and routed the IDEF0 way - and save a
-.rsf that Ramus reopens.
+and render a diagram to PNG so the agent can look at it. Rules: check the model against IDEF0.
+Hands: rename activities and flows, add, move and delete boxes, draw, fork, join and delete
+arrows - laid out and routed the IDEF0 way - and save a .rsf that Ramus reopens.
 
 Every reading tool shows the model as it stands, unsaved changes included, so a change can be
 looked at before it is written. Nothing is written until save_model.
@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mcp.server.fastmcp import FastMCP, Image  # noqa: E402
 
+import idef0_rules as rules  # noqa: E402
 from model_editor import EditError, ModelEditor  # noqa: E402
 from ramus_rsf import Activity, Arrow, Diagram, End, RsfModel  # noqa: E402
 from render_png import render_diagram_png  # noqa: E402
@@ -331,6 +332,38 @@ def render_diagram_svg_text(index: int = 0, node: str = "") -> str:
     return render_diagram_svg(d)
 
 
+# ------------------------------------------------------------------------------- the rules
+
+
+@mcp.tool()
+def check_model(sheet: Optional[str] = None) -> Dict[str, Any]:
+    """Check the model against the rules of IDEF0 - the whole model, or one sheet (``sheet``:
+    the number of the activity it decomposes, "A-0" for the context diagram).
+
+    Errors break the method: an activity with no control or no output, an arrow leaving a box
+    other than by its right side or entering by it, an end attached to nothing, a box or arrow
+    with no name. Warnings are worth a look: an arrow on one level with no continuation on the
+    other (ICOM balance - right only for a tunnel that was meant), an arrow drawn on both
+    levels but not joined, an arrow come down from above but not taken to any box, fewer than
+    3 or more than 6 boxes on a sheet, an activity not named by a verb or a flow named by one,
+    an arrow from frame to frame touching no box.
+
+    Each finding names its rule, sheet, box / flow / segment, and - where an editing tool
+    mends it - the call to make. Check again after fixing: one change can settle several.
+    """
+    _require()
+    if sheet and not any(d.node.lower() == sheet.strip().lower() for d in _Open.diagrams):
+        raise ValueError(f"No sheet {sheet!r}. This model has: "
+                         f"{', '.join(sorted(d.node for d in _Open.diagrams))}.")
+    found = rules.check(_Open.model, sheet)
+    result: Dict[str, Any] = {"checked": sheet.strip() if sheet else "whole model"}
+    result.update(rules.summary(found))
+    result["findings"] = [f.as_dict() for f in found]
+    if not found:
+        result["note"] = "No rule broken."
+    return result
+
+
 # ------------------------------------------------------------------------------- the hands
 #
 # Every change is made in memory; the reading tools show it straight away, and nothing is
@@ -435,6 +468,16 @@ def delete_arrow(segment: int) -> Dict[str, Any]:
     """
     _require()
     return _edited(_Open.editor.delete_arrow(int(segment)))
+
+
+@mcp.tool()
+def join_levels(first: int, second: int) -> Dict[str, Any]:
+    """Join an arrow on a box to the same arrow on the frame of that box's decomposition, when
+    both are drawn but are not tied together - each shows as a tunnel and the levels do not
+    balance (check_model reports it as not_joined, with the two segment ids). Give the two
+    segment ids in either order; they must carry the same flow and meet the same side."""
+    _require()
+    return _edited(_Open.editor.join_levels(int(first), int(second)))
 
 
 @mcp.tool()

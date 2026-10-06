@@ -475,6 +475,13 @@ class RsfModel:
         diagrams.sort(key=lambda d: len(d.activities), reverse=True)
         return diagrams
 
+    def nodes(self) -> Dict[int, List[Tuple[int, str]]]:
+        """Every crosspoint node in the model and the segment ends that meet at it: node id ->
+        [(sector id, "out" for a segment starting there / "in" for one ending there)]. Inside
+        a sheet a node is a fork or a join; shared by sheets, it carries an arrow from a box on
+        one level to the frame of that box's decomposition."""
+        return self._arrows()[1]
+
     # ------------------------------------------------------------------------- arrows
 
     def _blobs(self) -> Dict[int, vd.DiagramBlob]:

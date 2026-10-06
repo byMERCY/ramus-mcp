@@ -4,8 +4,8 @@ An MCP server that gives an AI agent **eyes and hands for Ramus** — the IDEF0/
 models stored in `.rsf` files. Point Claude (or any MCP client) at it and it can open a model, read
 its activity tree and every diagram's arrows, and **see** a diagram rendered as an image — boxes,
 arrows with their heads, names, colours, dashes and tunnels, laid out exactly as Ramus stores them.
-And it can **change** the model: rename activities and flows, add boxes and arrows — placed and
-routed the IDEF0 way — and save a `.rsf` that Ramus opens.
+It can **check** the model against the rules of IDEF0, and **change** it: rename activities and
+flows, add boxes and arrows — placed and routed the IDEF0 way — and save a `.rsf` that Ramus opens.
 
 Original work — it reads the `.rsf` **file format** directly (a ZIP of XML tables) and contains no
 Ramus code, so it needs neither the Ramus application nor Java to run. It reads files saved by both
@@ -56,6 +56,17 @@ A diagram is picked by its IDEF0 node number (`node="A1"`; `"A-0"` is the contex
 | `render_diagram(node/index)` | One sheet drawn as a PNG image (the "eyes") |
 | `render_diagram_svg_text(node/index)` | The same sheet as an SVG document |
 
+**Rules.** `check_model(sheet?)` checks the whole model, or one sheet, against IDEF0 and lists
+what it finds, each with the editing call that mends it:
+
+- *errors* — the method is broken: an activity with no control or no output, an arrow leaving a
+  box other than by its right side or entering by it, an end attached to nothing, a box or an
+  arrow with no name;
+- *warnings* — worth a look: ICOM balance (an arrow on one level with no continuation on the
+  other — right only for a tunnel that was meant; one drawn on both levels but not joined; one
+  come down from above but not drawn on to a box), fewer than 3 or more than 6 boxes on a sheet,
+  an activity not named by a verb or a flow named by one, an arrow from frame to frame.
+
 **Hands.** Activities and sheets are named by IDEF0 number (`"A12"`; a sheet by the activity it
 decomposes, `"A-0"` for the context diagram) or by id. Every change shows up at once in the reading
 tools, so it can be looked at before anything is written.
@@ -69,6 +80,7 @@ tools, so it can be looked at before anything is written.
 | `move_activity(activity, x?, y?, width?, height?)` | Move or resize a box; its arrows are routed again, an arrow it lands on is routed round it, and a name it covers is moved off |
 | `delete_activity(activity, with_decomposition?)` | Delete a box with the arrows that ended on it (and, if asked, everything under it); the boxes after it move up a number |
 | `delete_arrow(segment)` | Delete an arrow segment; as in Ramus, a piece left leading nowhere goes with it |
+| `join_levels(first, second)` | Tie an arrow on a box to the same arrow on the frame of that box's decomposition when both are drawn but not joined (each a tunnel) |
 | `tidy_sheet(sheet)` | Lay a sheet's arrows out again: each is rerouted and the new route kept only if clearly better, crossing pairs are tried the other way round, then names in the way are moved; boxes stay put |
 | `tidy_labels(sheet)` | Move only the arrow names that are in the way back beside their arrows |
 | `save_model(path?, overwrite?)` | Write the changes: to a new file (the original stays untouched), or over the opened one after copying it once to `<name>.backup.rsf` |
@@ -96,7 +108,8 @@ Eyes work: reading models and rendering diagrams with their arrows. Hands work f
 adding, moving and deleting boxes, for drawing, forking and deleting arrows and for tidying a
 sheet's layout; every change is written the
 way Ramus writes it — a rewritten table is byte-for-byte what Ramus itself would produce — and was
-checked by opening the result in the Ramus engine. Checks of the IDEF0 rules are next.
+checked by opening the result in the Ramus engine. The model can be checked against the rules of
+IDEF0, and the findings mended with the hands.
 
 ## License
 
