@@ -53,6 +53,18 @@ class Routing(unittest.TestCase):
         on_top = any(a[1] == b[1] == 50.0 and abs(a[0] - b[0]) > 30 for a, b in _pieces(pts))
         self.assertFalse(on_top)
 
+    def test_a_narrow_gap_between_boxes_is_used_without_a_jog(self):
+        # Two boxes 22 apart: the fixed 14-unit stubs of old overlapped there and the route
+        # had to step back on itself. It should drop straight down the middle of the gap.
+        a = (501.0, 213.0, 72.0, 51.0)
+        b = (595.0, 295.0, 72.0, 51.0)
+        pts = rt.route((573, 238.5), rt.RIGHT, (595, 320.5), rt.RIGHT, [a, b], SHEET)
+        self.assertEqual(pts, [(573, 238.5), (584, 238.5), (584, 320.5), (595, 320.5)])
+
+    def test_the_turn_is_made_halfway_when_nothing_says_otherwise(self):
+        pts = rt.route((100, 50), rt.RIGHT, (200, 120), rt.RIGHT, [], SHEET)
+        self.assertEqual(pts, [(100, 50), (150, 50), (150, 120), (200, 120)])
+
     def test_simplify_merges_straight_runs(self):
         self.assertEqual(rt.simplify([(0, 0), (5, 0), (10, 0), (10, 0), (10, 5)]),
                          [(0, 0), (10, 0), (10, 5)])
@@ -71,6 +83,16 @@ class Attaching(unittest.TestCase):
         c = rt.attach(self.BOX, rt.SIDE_LEFT, [130.0], prefer=131.0)
         self.assertGreaterEqual(abs(c - 130.0), 12.0)
         self.assertTrue(108.0 <= c <= 152.0)
+
+    def test_a_crowded_side_still_keeps_as_far_from_the_others_as_it_can(self):
+        # A side with no evenly spaced spot left: the new end must not land on a taken one
+        # (it used to fall back to the middle, right on top of an arrow there).
+        box = (501.0, 213.0, 72.0, 51.0)
+        c = rt.attach(box, rt.SIDE_RIGHT, [237.46, 250.44])
+        self.assertEqual(c, 221.0)  # the far end of the free stretch, 16 clear
+
+    def test_several_preferences_are_tried_in_order(self):
+        self.assertEqual(rt.attach(self.BOX, rt.SIDE_LEFT, [120.0], prefer=[121.0, 145.0]), 145.0)
 
     def test_the_point_is_on_the_side(self):
         self.assertEqual(rt.point_on(self.BOX, rt.SIDE_TOP, 150.0), (150.0, 100.0))
