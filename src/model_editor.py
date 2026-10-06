@@ -1583,19 +1583,28 @@ class _Layout:
         crowding, plus the price of crowding an end in among others - wins."""
         lines = self.lines(exclude)
         names = self.names(exclude)
+        costs = rt.Costs(lines, names)
         boxes = list(self.boxes.values())
         s_base = [p for p, _ in self._options(start, end, False, [], exclude)]
         e_base = [p for p, _ in self._options(end, start, True, [], exclude)]
+        # Cheapest-looking pairs first; once even the least a pair could cost is no better than
+        # the best route found, neither it nor any after it can win.
+        pairs = sorted(
+            ((rt.least_cost(sp, start.direction, ep, end.direction) + s_price + e_price, n, sp, ep,
+              s_price + e_price)
+             for n, ((sp, s_price), (ep, e_price)) in enumerate(
+                 (s, e) for s in self._options(start, end, False, e_base, exclude)
+                 for e in self._options(end, start, True, s_base, exclude))
+             if sp != ep))
         best = None
-        for sp, s_price in self._options(start, end, False, e_base, exclude):
-            for ep, e_price in self._options(end, start, True, s_base, exclude):
-                if sp == ep:
-                    continue
-                pts = rt.route(sp, start.direction, ep, end.direction, boxes, self.frame, lines,
-                               labels=names)
-                cost = rt.route_cost(pts, lines, names) + s_price + e_price
-                if best is None or cost < best[0]:
-                    best = (cost, pts)
+        for least, _, sp, ep, price in pairs:
+            if best is not None and least >= best[0]:
+                break
+            pts = rt.route(sp, start.direction, ep, end.direction, boxes, self.frame, lines,
+                           labels=names, costs=costs)
+            cost = rt.route_cost(pts, costs=costs) + price
+            if best is None or cost < best[0]:
+                best = (cost, pts)
         if best is None:
             raise EditError("There is no way to draw that arrow: its two ends meet.")
         return best[1], best[0]
@@ -1608,6 +1617,7 @@ class _Layout:
         point, the number of the piece it is on, and the branch's route."""
         lines = self.lines()  # the trunk included: a branch must not run back along it
         names = self.names()
+        costs = rt.Costs(lines, names)
         boxes = list(self.boxes.values())
         targets = self._options(end, None, True, [], None)[:4]
         best = None
@@ -1631,8 +1641,8 @@ class _Layout:
                 for way in ways:
                     for e, price in targets:
                         pts = rt.route(fork, way, e, end.direction, boxes, self.frame,
-                                       lines, labels=names)
-                        cost = rt.route_cost(pts, lines, names) + price
+                                       lines, labels=names, costs=costs)
+                        cost = rt.route_cost(pts, costs=costs) + price
                         if best is None or cost < best[0]:
                             best = (cost, trunk, fork, k, pts)
         if best is None:

@@ -65,6 +65,55 @@ class Routing(unittest.TestCase):
         pts = rt.route((100, 50), rt.RIGHT, (200, 120), rt.RIGHT, [], SHEET)
         self.assertEqual(pts, [(100, 50), (150, 50), (150, 120), (200, 120)])
 
+    def test_between_two_arrows_it_runs_down_the_middle_not_hugging_one(self):
+        # The only line the boxes offer here is just under the lower arrow; the middle of the
+        # corridor between the two arrows is the place for a third.
+        box = (150.0, 150.0, 100.0, 50.0)
+        existing = [((100.0, 80.0), (500.0, 80.0)), ((50.0, 135.0), (350.0, 135.0))]
+        pts = rt.route((400, 300), rt.UP, (200, 150), rt.DOWN, [box], SHEET, existing)
+        level = [a[1] for a, b in _pieces(pts) if a[1] == b[1]]
+        self.assertEqual(len(level), 1)
+        self.assertTrue(all(abs(level[0] - y) >= rt.NEAR for y in (80.0, 135.0)), pts)
+
+    def test_running_beside_an_arrow_costs_more_the_closer_it_is(self):
+        self.assertGreater(rt._alongside(3.0, 10.0), rt._alongside(12.0, 10.0))
+        self.assertGreater(rt._alongside(12.0, 10.0), 0.0)
+        self.assertAlmostEqual(rt._alongside(rt.NEAR, 10.0), 0.0)
+        self.assertGreater(rt._alongside(1.0, 10.0), rt._alongside(rt.ON_TOP, 10.0))
+
+    def test_the_indexed_costs_are_the_plain_ones(self):
+        import random
+        rnd = random.Random(7)
+        grid = [10.0 * k for k in range(30)]
+
+        def piece():
+            a = (rnd.choice(grid), rnd.choice(grid))
+            if rnd.random() < 0.5:
+                return a, (rnd.choice(grid), a[1])
+            return a, (a[0], rnd.choice(grid))
+
+        lines = [piece() for _ in range(40)] + [((0.0, 0.0), (50.0, 30.0))]  # one skewed
+        labels = [(rnd.choice(grid), rnd.choice(grid), 40.0, 12.0) for _ in range(8)]
+        costs = rt.Costs(lines, labels)
+        for _ in range(500):
+            a, b = piece()
+            if a == b:
+                continue
+            plain = rt._line_cost(a, b, lines) + rt._label_cost(a, b, labels)
+            self.assertAlmostEqual(costs.piece(a, b), plain, msg=(a, b))
+            self.assertAlmostEqual(costs.piece(b, a), plain, msg=(b, a))
+
+    def test_least_cost_counts_the_turns_no_route_can_avoid(self):
+        self.assertEqual(rt.least_cost((0, 0), rt.RIGHT, (50, 0), rt.RIGHT), 50)
+        self.assertEqual(rt.least_cost((0, 0), rt.RIGHT, (50, 20), rt.DOWN), 70 + rt.BEND)
+        self.assertEqual(rt.least_cost((0, 0), rt.RIGHT, (50, 20), rt.RIGHT), 70 + 2 * rt.BEND)
+        self.assertEqual(rt.least_cost((0, 0), rt.RIGHT, (-50, 0), rt.RIGHT), 50 + 2 * rt.BEND)
+        self.assertEqual(rt.least_cost((0, 0), rt.LEFT, (50, 0), rt.RIGHT), 50 + 2 * rt.BEND)
+        a, b = (60.0, 40.0, 80.0, 50.0), (300.0, 40.0, 80.0, 50.0)
+        pts = rt.route((380, 65), rt.RIGHT, (60, 65), rt.RIGHT, [a, b], SHEET)
+        self.assertGreaterEqual(rt.route_cost(pts), rt.least_cost(pts[0], rt.RIGHT, pts[-1],
+                                                                  rt.RIGHT))
+
     def test_simplify_merges_straight_runs(self):
         self.assertEqual(rt.simplify([(0, 0), (5, 0), (10, 0), (10, 0), (10, 5)]),
                          [(0, 0), (10, 0), (10, 5)])
