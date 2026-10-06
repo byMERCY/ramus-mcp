@@ -291,16 +291,19 @@ class ModelEditor:
         """Draw an arrow on the sheet that decomposes ``sheet_id``.
 
         ``source`` is where it comes from: ``{"activity": id}`` (an output, leaving the right
-        side of a box), or ``{"frame": "input" | "control" | "mechanism"}`` - something coming
-        in from outside the decomposed activity. ``target`` is where it goes:
+        side of a box), ``{"frame": "input" | "control" | "mechanism"}`` - something coming
+        in from outside the decomposed activity - or ``{"arrow": segment}``: a branch off an
+        arrow already on the sheet, forking from a point on it. ``target`` is where it goes:
         ``{"activity": id, "role": "input" | "control" | "mechanism"}``, or
         ``{"frame": "output"}`` - leaving the decomposed activity.
 
-        The arrow carries a new flow called ``name``, or the existing flow ``flow``. Where it
-        meets the frame, or a box that has a decomposition of its own, it is joined to the
-        same flow on the other level if that arrow is there and not yet continued - the same
-        flow and the same node, which is what keeps IDEF0's arrows balanced between levels.
-        With nothing to join it is left as a tunnel, as Ramus shows it.
+        The arrow carries a new flow called ``name``, or the existing flow ``flow``; a branch
+        carries the flow of the arrow it forks from unless told otherwise, and then shows no
+        name of its own (as in Ramus). Where it meets the frame, or a box that has a
+        decomposition of its own, it is joined to the same flow on the other level if that
+        arrow is there and not yet continued - the same flow and the same node, which is what
+        keeps IDEF0's arrows balanced between levels. With nothing to join it is left as a
+        tunnel, as Ramus shows it.
 
         The route is orthogonal, leaves and enters by the sides the roles call for, keeps clear
         of the boxes and avoids crossing or running along the other arrows; its name is put
@@ -318,8 +321,9 @@ class ModelEditor:
             raise EditError(f"Activity {sheet_id} has no decomposition to draw on. Add a box "
                             f"under it first (add_activity), or pick a sheet from list_diagrams.")
         on_sheet = {a.element_id: a for a in sheet.activities}
-        src = _end_spec(source, "source", on_sheet)
+        src = _end_spec(source, "source", on_sheet, {a.sector_id: a for a in sheet.arrows})
         dst = _end_spec(target, "target", on_sheet)
+        trunk = src.arrow
         if src.kind == "frame" and dst.kind == "frame":
             raise EditError("An arrow from the frame straight back to the frame touches no box. "
                             "One end has to be on an activity.")
@@ -327,9 +331,18 @@ class ModelEditor:
                 and src.activity.element_id == dst.activity.element_id:
             raise EditError("An arrow from a box back into the same box is not drawn this way in "
                             "IDEF0; feed the output to another activity.")
+        if trunk is not None and dst.kind == "activity" and any(
+                e.kind == "activity" and e.activity_id == dst.activity.element_id
+                for e in (trunk.start, trunk.end)):
+            raise EditError("That branch would lead back into a box the arrow it forks from "
+                            "already starts or ends at.")
 
         # ---- the flow, and the arrows on the other level it may be joined to
         names = self._stream_names()
+        if trunk is not None and flow is None and not (name and name.strip()):
+            if trunk.stream_id is None:
+                raise EditError("The arrow to branch from carries no flow; give the branch a name.")
+            flow = trunk.stream_id
         if flow is not None:
             if flow not in names:
                 raise EditError(f"There is no flow {flow}. get_diagram reports each arrow's "
@@ -346,6 +359,8 @@ class ModelEditor:
         links: Dict[str, Tuple[int, int]] = {}
         stubs = []  # inherited stubs this arrow takes over
         for which, spec in (("source", src), ("target", dst)):
+            if spec.kind == "arrow":
+                continue  # a fork joins nothing on another level
             partner = self._partner(spec, which, sheet, sheets, acts, stream, label)
             if partner is not None:
                 node, partner_stream, stub = partner
@@ -361,9 +376,19 @@ class ModelEditor:
 
         # ---- geometry
         layout = _Layout(sheet)
-        points = layout.plan(layout.anchor(src, "start"), layout.anchor(dst, "end"))
+        if trunk is not None:
+            # Any piece of the same flow on the sheet may carry the fork: the arrow named, the
+            # rest of it past a fork, its other branches.
+            kin = [a for a in sheet.arrows if a.has_route and a.flow == trunk.flow
+                   and a.stream_id == trunk.stream_id]
+            trunk, fork, piece, points = layout.plan_branch(kin or [trunk],
+                                                            layout.anchor(dst, "end"))
+        else:
+            points = layout.plan(layout.anchor(src, "start"), layout.anchor(dst, "end"))
         style_hex = self._sheet_style(sheet_id)
-        text_box = layout.place_label(label, _font_size_of(style_hex), points)
+        named = trunk is None or stream != trunk.stream_id
+        text_box, tilde = layout.place_label(label, _font_size_of(style_hex), points) \
+            if named else (None, False)
 
         # ---- write it
         doc = self.doc
@@ -390,23 +415,110 @@ class ModelEditor:
                 "FUNCTION_TYPE": spec.side if spec.kind == "activity" else -1,
                 "CROSSPOINT": node, "TUNNEL_SOFT": 0,
             })
-        self._write_points(sector, points)
-        tx, ty, tw, th = text_box
-        self._add_value("IDEF0/attribute_sector_properties", "F_SECTOR_PROPERTIES", sector, {
-            "SHOW_TEXT": 1, "SHOW_TILDA": 0, "TEXT_X": tx, "TEXT_Y": ty, "TEXT_WIDTH": tw,
-            "TEXT_HIEGHT": th, "TILDA_POS": 0.0, "TRANSPARENT": 1,
-        })
+        first = None
+        if trunk is not None:
+            x_ord, y_ord, continuation = self._split(trunk, piece, fork, nodes["source"])
+            first = (x_ord, y_ord, _point_type(points[0], points[1]))
+        self._write_points(sector, points, first)
+        if text_box is not None:
+            tx, ty, tw, th = text_box
+            self._add_value("IDEF0/attribute_sector_properties", "F_SECTOR_PROPERTIES", sector, {
+                "SHOW_TEXT": 1, "SHOW_TILDA": 1 if tilde else 0, "TEXT_X": tx, "TEXT_Y": ty,
+                "TEXT_WIDTH": tw, "TEXT_HIEGHT": th,
+                "TILDA_POS": _share_nearest(points, text_box) if tilde else 0.0,
+                "TRANSPARENT": 1,
+            })
+        else:
+            self._add_value("IDEF0/attribute_sector_properties", "F_SECTOR_PROPERTIES", sector,
+                            _NO_LABEL)
+        if trunk is not None:  # the trunk is shorter now: keep its name in touch with it
+            fresh = next(d for d in self.snapshot().diagrams() if d.parent_id == sheet_id)
+            cut = next(a for a in fresh.arrows if a.sector_id == trunk.sector_id)
+            self._relabel(_Layout(fresh), cut, cut.points)
         # A box with no decomposition gets the arrow-to-be of one, as Ramus 3 gives it.
         frame = self.snapshot().frame()
         for which, spec, p in (("source", src, points[0]), ("target", dst, points[-1])):
             if spec.kind == "activity" and spec.activity.element_id not in sheets:
                 self._add_inherited_stub(spec, which, p, nodes[which], stream, style_hex, frame)
-        return {
+        result = {
             "sector": sector, "stream": stream, "name": label,
             "from": _describe_end(src), "to": _describe_end(dst),
             "joined_to_other_level": sorted(links),
             "route": [(round(x, 2), round(y, 2)) for x, y in points],
         }
+        moved = self._free_labels(sheet_id, {sector: points})
+        if moved:
+            result["labels_moved"] = moved
+        if trunk is not None:
+            result["fork"] = {"at": (round(fork[0], 2), round(fork[1], 2)),
+                              "trunk": trunk.sector_id, "continuation": continuation}
+        return result
+
+    def _split(self, arrow, piece: int, at, node: int) -> Tuple[int, int, int]:
+        """Cut a segment in two at point ``at`` on its piece number ``piece``, the way Ramus
+        makes a fork: the segment ends there on a new node, and a new segment of the same flow
+        carries on from that node along the rest of the route to where the old one ended (its
+        end, node and all, moves over). The cut point's ordinates are shared by every segment
+        meeting there; they are returned with the new segment's id."""
+        doc = self.doc
+        sid = arrow.sector_id
+        points_table = doc.table("IDEF0/attribute_sector_points")
+        attr = self._require_attribute("F_SECTOR_POINTS")
+        rows = sorted(points_table.where(ATTRIBUTE_ID=attr, ELEMENT_ID=sid),
+                      key=lambda r: int(r.get("POSITION", "0") or 0))
+        if len(rows) < piece + 2:
+            raise EditError(f"Arrow segment {sid} has no route to fork from.")
+        branch = doc.current_branch()
+        if points_table.has("VALUE_BRANCH_ID") and any(
+                int(r.get("VALUE_BRANCH_ID", "0") or 0) != branch for r in rows):
+            raise EditError("This arrow's route was drawn on an earlier branch of the model's "
+                            "history; forking it there is not supported yet.")
+        a, b = rows[piece], rows[piece + 1]
+        horizontal = a["Y_POSITION"] == b["Y_POSITION"]
+        x_ord = doc.new_ordinate() if horizontal else int(a["X_ORDINATE_ID"])
+        y_ord = int(a["Y_ORDINATE_ID"]) if horizontal else doc.new_ordinate()
+        kind = 0 if horizontal else 1
+
+        # The new segment: same flow, same sheet, same look; no name of its own.
+        rest = doc.new_element_id()
+        doc.add_row("elements", {"ELEMENT_ID": rest, "ELEMENT_NAME": "",
+                                 "QUALIFIER_ID": self._require_qualifier("F_SECTORS")},
+                    lenient=True)
+        for link in ("F_FUNCTION_SECTOR", "F_SECTOR_STREAM"):
+            row = self._live_value_row("Core/attribute_other_elements",
+                                       self._require_attribute(link), sid)
+            if row is not None:
+                self._add_link(rest, link, int(row["OTHER_ELEMENT"]))
+        look = self._live_value_row("IDEF0/attribute_sectors",
+                                    self._require_attribute("F_SECTOR_ATTRIBUTE"), sid)
+        values = {k: v for k, v in (look or {}).items()
+                  if k not in ("ELEMENT_ID", "ATTRIBUTE_ID", "VALUE_BRANCH_ID")}
+        values.pop("ALTERNATIVE_TEXT", None)
+        self._add_value("IDEF0/attribute_sectors", "F_SECTOR_ATTRIBUTE", rest, values)
+        self._add_value("IDEF0/attribute_sector_properties", "F_SECTOR_PROPERTIES", rest,
+                        _NO_LABEL)
+
+        # Its route: the cut point, then the old points after it, ordinates and all.
+        self._add_value("IDEF0/attribute_sector_points", "F_SECTOR_POINTS", rest, {
+            "POSITION": 0, "POINT_TYPE": kind, "X_POSITION": float(at[0]),
+            "Y_POSITION": float(at[1]), "X_ORDINATE_ID": x_ord, "Y_ORDINATE_ID": y_ord})
+        for i, r in enumerate(rows[piece + 1:], start=1):
+            points_table.set(r, POSITION=i, ELEMENT_ID=rest)
+        # ... and the old segment now stops at the cut.
+        self._add_value("IDEF0/attribute_sector_points", "F_SECTOR_POINTS", sid, {
+            "POSITION": piece + 1, "POINT_TYPE": kind, "X_POSITION": float(at[0]),
+            "Y_POSITION": float(at[1]), "X_ORDINATE_ID": x_ord, "Y_ORDINATE_ID": y_ord})
+
+        borders = doc.table("IDEF0/attribute_sector_borders")
+        end_attr = self._require_attribute("F_SECTOR_BORDER_END")
+        old_end = self._live_value_row("IDEF0/attribute_sector_borders", end_attr, sid)
+        if old_end is not None:
+            borders.set(old_end, ELEMENT_ID=rest)
+        junction = {"BORDER_TYPE": -1, "FUNCTION": -1, "FUNCTION_TYPE": -1, "CROSSPOINT": node,
+                    "TUNNEL_SOFT": 0}
+        self._add_value("IDEF0/attribute_sector_borders", "F_SECTOR_BORDER_END", sid, junction)
+        self._add_value("IDEF0/attribute_sector_borders", "F_SECTOR_BORDER_START", rest, junction)
+        return x_ord, y_ord, rest
 
     def _add_inherited_stub(self, spec: "_EndSpec", which: str, point, node: int, stream: int,
                             style_hex, frame) -> int:
@@ -660,6 +772,8 @@ class ModelEditor:
         # Names last, once every route is where it will stay.
         moved_labels = [a.sector_id for a in attached + crossing + covered
                         if self._relabel(layout, a, layout.routes[a.sector_id])]
+        moved_labels += self._free_labels(sheet.parent_id, {
+            r["sector"]: layout.routes[r["sector"]] for r in rerouted})
         return {"id": element_id, "number": act.number, "x": new[0], "y": new[1],
                 "width": new[2], "height": new[3], "rerouted": rerouted,
                 "labels_moved": moved_labels}
@@ -712,6 +826,109 @@ class ModelEditor:
             t.remove(r)
         self._write_points(sector, points, first, last)
 
+    def tidy_sheet(self, sheet_id: int, passes: int = 3) -> Dict[str, object]:
+        """Lay a sheet's arrows out again, one at a time with the others where they are: each
+        is rerouted - its ends free to slide along their sides, an end on a node kept - and the
+        new route is kept only if it is clearly better (fewer crossings, bends, crowding). A few
+        passes let arrows drawn early make way for ones drawn after them. Then the names are
+        tidied (see tidy_labels). Boxes do not move."""
+        if self._version() != 2:
+            raise EditError("Arrows can be rerouted in files in the Ramus 3 format only.")
+        rerouted: List[int] = []
+        for _ in range(passes):
+            sheet = next((d for d in self.snapshot().diagrams() if d.parent_id == sheet_id), None)
+            if sheet is None:
+                raise EditError(f"Activity {sheet_id} has no decomposition sheet.")
+            layout = _Layout(sheet)
+            changed = False
+            for a in sheet.arrows:
+                if not a.has_route:
+                    continue
+                start = layout.anchor_from(a.start, "start", a.points)
+                end = layout.anchor_from(a.end, "end", a.points)
+                if start.point is not None and end.point is not None and len(a.points) <= 2:
+                    continue
+                now = layout.cost_of(layout.routes[a.sector_id], start, end, a.sector_id)
+                points, _ = layout.plan_with_cost(start, end, exclude=a.sector_id)
+                if layout.cost_of(points, start, end, a.sector_id) < now - _WORTH_IT:
+                    self._replace_route(a.sector_id, points, start, end)
+                    layout.update(a.sector_id, points)
+                    if a.sector_id not in rerouted:
+                        rerouted.append(a.sector_id)
+                    changed = True
+            if not changed:
+                break
+        for s in self._uncross(sheet_id):
+            if s not in rerouted:
+                rerouted.append(s)
+        result = self.tidy_labels(sheet_id)
+        result["rerouted"] = rerouted
+        return result
+
+    def _uncross(self, sheet_id: int) -> List[int]:
+        """Two arrows that cross often cannot be helped one at a time - each is the best it can
+        be with the other where it is - while drawn the other way round neither crosses. For
+        each crossing pair: take both up, route them again in either order, and keep the better
+        result if it beats what is there."""
+        sheet = next(d for d in self.snapshot().diagrams() if d.parent_id == sheet_id)
+        layout = _Layout(sheet)
+        arrows = {a.sector_id: a for a in sheet.arrows if a.has_route}
+        anchors = {s: (layout.anchor_from(a.start, "start", a.points),
+                       layout.anchor_from(a.end, "end", a.points)) for s, a in arrows.items()}
+        changed: List[int] = []
+        for first, second in _crossing_pairs(layout.routes, arrows):
+            routes = {s: layout.routes[s] for s in (first, second)}
+            now = sum(layout.cost_of(routes[s], *anchors[s], s) for s in routes)
+            best = None
+            for ends in _swaps(first, second, anchors, routes):
+                for order in ((first, second), (second, first)):
+                    for s in order:
+                        layout.routes.pop(s)
+                    trial = {}
+                    for s in order + order[:1]:  # the first again, now the second is there
+                        layout.routes.pop(s, None)
+                        trial[s] = layout.plan(*ends[s], exclude=s)
+                        layout.routes[s] = trial[s]
+                    total = sum(layout.cost_of(trial[s], *anchors[s], s) for s in trial)
+                    if best is None or total < best[0]:
+                        best = (total, dict(trial))
+                    layout.routes.update(routes)
+            if best[0] < now - _WORTH_IT:
+                for s, pts in best[1].items():
+                    self._replace_route(s, pts, *anchors[s])
+                    layout.routes[s] = pts
+                    if s not in changed:
+                        changed.append(s)
+        return changed
+
+    def tidy_labels(self, sheet_id: int) -> Dict[str, object]:
+        """Move every arrow name on a sheet that is in the way of something - on a box, another
+        name or a line, off the sheet, or lost far from its arrow - back beside its arrow."""
+        sheet = next((d for d in self.snapshot().diagrams() if d.parent_id == sheet_id), None)
+        if sheet is None:
+            raise EditError(f"Activity {sheet_id} has no decomposition sheet.")
+        if self._version() != 2:
+            raise EditError("Arrow names can be moved in files in the Ramus 3 format only.")
+        layout = _Layout(sheet)
+        moved = [a.sector_id for a in sheet.arrows
+                 if a.has_route and self._relabel(layout, a, a.points)]
+        return {"sheet": sheet.node, "labels_moved": moved}
+
+    def _free_labels(self, sheet_id: int, routes) -> List[int]:
+        """Move the names a new or rerouted route now runs through."""
+        sheet = next(d for d in self.snapshot().diagrams() if d.parent_id == sheet_id)
+        layout = _Layout(sheet)
+        moved = []
+        for a in sheet.arrows:
+            box = layout.labels.get(a.sector_id)
+            if box is None or a.sector_id in routes or not a.has_route:
+                continue
+            if any(rt._crosses_rect(p, q, box) for pts in routes.values()
+                   for p, q in zip(pts, pts[1:])):
+                if self._relabel(layout, a, a.points):
+                    moved.append(a.sector_id)
+        return moved
+
     def _relabel(self, layout: "_Layout", arrow, points) -> bool:
         """Keep an arrow's name where it is if it is still clear and close to the route, or
         put it beside the route again; a zig-zag tying it to the line is pointed at the route's
@@ -720,12 +937,17 @@ class ModelEditor:
             return False
         values: Dict[str, object] = {}
         box = layout.labels.get(arrow.sector_id)
-        moved = box is None or not layout.label_fits(box, points, arrow.sector_id)
+        tilde = arrow.label.tilde_pos is not None
+        moved = box is None or not layout.label_fits(box, points, arrow.sector_id, tilde)
         if moved:
-            box = layout.place_label(arrow.name, arrow.font_size, points, exclude=arrow.sector_id)
+            box, far = layout.place_label(arrow.name, arrow.font_size, points,
+                                          exclude=arrow.sector_id)
             layout.labels[arrow.sector_id] = box
             values.update(TEXT_X=box[0], TEXT_Y=box[1], TEXT_WIDTH=box[2], TEXT_HIEGHT=box[3])
-        if arrow.label.tilde_pos is not None:
+            if far and not tilde:
+                tilde = True
+                values["SHOW_TILDA"] = 1
+        if tilde:
             values["TILDA_POS"] = _share_nearest(points, box)
         if values:
             self._set_value("IDEF0/attribute_sector_properties", "F_SECTOR_PROPERTIES",
@@ -1087,17 +1309,32 @@ def rt_side_name(side: int) -> str:
 
 @dataclass
 class _EndSpec:
-    kind: str  # "activity" or "frame"
+    kind: str  # "activity", "frame", or "arrow" (a fork off an arrow on the sheet)
     side: int
     activity: Optional[object] = None  # ramus_rsf.Activity
     role: str = ""
+    arrow: Optional[object] = None  # ramus_rsf.Arrow, for a fork
 
 
-def _end_spec(spec: Dict[str, object], which: str, on_sheet) -> _EndSpec:
+def _end_spec(spec: Dict[str, object], which: str, on_sheet, arrows=None) -> _EndSpec:
     """Read one end of a requested arrow, refusing what IDEF0 does not allow."""
     if not isinstance(spec, dict):
         raise EditError(f'The {which} must be an object such as {{"activity": 12, "role": '
                         f'"input"}} or {{"frame": "input"}}.')
+    if "arrow" in spec:
+        if which != "source":
+            raise EditError("An arrow can fork off another one, but not end on one (a join) - "
+                            "not yet. Give the target as a box or the frame.")
+        try:
+            sid = int(spec["arrow"])
+        except (TypeError, ValueError):
+            raise EditError(f"The arrow to branch from must be a segment id, not "
+                            f"{spec['arrow']!r}.")
+        arrow = (arrows or {}).get(sid)
+        if arrow is None or not arrow.has_route:
+            raise EditError(f"There is no arrow segment {sid} drawn on this sheet to branch "
+                            f"from. get_diagram lists each flow's segments.")
+        return _EndSpec("arrow", -1, arrow=arrow)
     if "frame" in spec:
         role = str(spec["frame"]).lower()
         allowed = ("input", "control", "mechanism") if which == "source" else ("output",)
@@ -1129,6 +1366,8 @@ def _end_spec(spec: Dict[str, object], which: str, on_sheet) -> _EndSpec:
 
 
 def _describe_end(spec: _EndSpec) -> Dict[str, object]:
+    if spec.kind == "arrow":
+        return {"branch_of": spec.arrow.sector_id}
     if spec.kind == "frame":
         return {"frame": spec.role, "side": rt_side_name(spec.side)}
     return {"activity": spec.activity.element_id, "number": spec.activity.number,
@@ -1137,6 +1376,57 @@ def _describe_end(spec: _EndSpec) -> Dict[str, object]:
 
 def _back(direction):
     return (-direction[0], -direction[1])
+
+
+def _swaps(first: int, second: int, anchors, routes):
+    """The ends to try two crossing arrows with: as they are (free to slide), and - where both
+    start, or both end, on the same side of the same box or frame - with those two ends
+    swapped and pinned, which is what usually undoes a crossing."""
+    yield {s: anchors[s] for s in (first, second)}
+    for which, at in ((0, 0), (1, -1)):  # starts, ends
+        a, b = anchors[first][which], anchors[second][which]
+        if a.point is not None or b.point is not None or a.kind != b.kind \
+                or a.side != b.side or a.owner != b.owner:
+            continue
+        pa, pb = routes[first][at], routes[second][at]
+
+        def pinned(anchor, p):
+            return _Anchor((p[0], p[1], 0.0, 0.0), anchor.side, anchor.direction, "fixed",
+                           point=p)
+
+        swapped = {first: list(anchors[first]), second: list(anchors[second])}
+        swapped[first][which] = pinned(a, pb)
+        swapped[second][which] = pinned(b, pa)
+        yield {s: tuple(v) for s, v in swapped.items()}
+
+
+def _crossing_pairs(routes, arrows) -> List[Tuple[int, int]]:
+    """Pairs of segments whose routes cross, either of which can be rerouted (not both ends
+    fixed on nodes)."""
+    def movable(s) -> bool:
+        a = arrows[s]
+        return any(e.kind in ("activity", "frame") for e in (a.start, a.end))
+
+    ids = [s for s in routes if s in arrows and movable(s)]
+    out = []
+    for i, s in enumerate(ids):
+        for t in ids[i + 1:]:
+            if any(rt._line_cost(p, q, [(u, v)]) >= rt.CROSSING
+                   for p, q in zip(routes[s], routes[s][1:]) if p != q
+                   for u, v in zip(routes[t], routes[t][1:]) if u != v):
+                out.append((s, t))
+    return out
+
+
+def _point_type(p, q) -> int:
+    """POINT_TYPE of a route's point on a node: 0 where the piece off it is horizontal, 1 where
+    it is vertical (so Ramus reads it from the files it writes)."""
+    return 0 if p[1] == q[1] else 1
+
+
+# The label row of a segment that shows no name: a fork's continuation, a same-flow branch.
+_NO_LABEL = {"SHOW_TEXT": 0, "SHOW_TILDA": 0, "TEXT_X": 0.0, "TEXT_Y": 0.0, "TEXT_WIDTH": 0.0,
+             "TEXT_HIEGHT": 0.0, "TILDA_POS": 0.0, "TRANSPARENT": 0}
 
 
 def _describe_arrows(sectors, shown) -> List[Dict[str, object]]:
@@ -1161,7 +1451,9 @@ def _label_rect(label) -> Tuple[float, float, float, float]:
 
 _SIDE_NUMBERS = {name: side for side, name in _SIDE_NAMES.items()}
 _APPROACH = 3 * rt.MARGIN  # how far before a perpendicular end a frame arrow turns towards it
-_TRIES = 6  # places tried at each end of an arrow
+_TRIES = 8  # places tried at each end of an arrow
+_FORK_CLEAR = 14.0  # a fork keeps this far from either end of the piece it is on
+_WORTH_IT = 5.0  # tidy_sheet keeps a new route only if it is cheaper by more than this
 
 
 @dataclass
@@ -1198,6 +1490,10 @@ class _Layout:
     def lines(self, exclude: Optional[int] = None):
         return [(p, q) for s, pts in self.routes.items() if s != exclude
                 for p, q in zip(pts, pts[1:])]
+
+    def names(self, exclude: Optional[int] = None):
+        """The rectangles of every name and free text on the sheet but ``exclude``'s."""
+        return [r for s, r in self.labels.items() if s != exclude] + self.texts
 
     def update(self, sector: int, points, label=None) -> None:
         self.routes[sector] = list(points)
@@ -1264,20 +1560,29 @@ class _Layout:
             return [(anchor.point, 0.0)]
         axis = 1 if anchor.side in (rt.SIDE_LEFT, rt.SIDE_RIGHT) else 0
         prefs = [anchor.keep] if anchor.keep is not None else []
-        d = other.direction
         sign = 1.0 if other_is_start else -1.0
         for q in other_points:
-            prefs.append(q[axis] + sign * d[axis] * _APPROACH)
+            prefs.append(q[axis] + sign * other.direction[axis] * _APPROACH)
         found = rt.attach_options(anchor.rect, anchor.side, self.taken(anchor, exclude), prefs,
                                   corner=anchor.corner)
         found.sort(key=lambda o: o[1])
         return [(rt.point_on(anchor.rect, anchor.side, c), price) for c, price in found[:_TRIES]]
 
     def plan(self, start: _Anchor, end: _Anchor, exclude: Optional[int] = None):
-        """The best route between two anchors: every pair of the places worth trying at the
-        two ends is routed, and the cheapest - its length, bends, crossings and crowding, plus
-        the price of crowding an end in among others - wins."""
+        """The best route between two anchors (see plan_with_cost)."""
+        return self.plan_with_cost(start, end, exclude)[0]
+
+    def cost_of(self, points, start: _Anchor, end: _Anchor, exclude: Optional[int] = None):
+        """What a route costs as it stands, by the measure plan_with_cost uses."""
+        return rt.route_cost(points, self.lines(exclude), self.names(exclude)) + \
+            self.crowding(start, points[0], exclude) + self.crowding(end, points[-1], exclude)
+
+    def plan_with_cost(self, start: _Anchor, end: _Anchor, exclude: Optional[int] = None):
+        """The best route between two anchors, and its cost: every pair of the places worth
+        trying at the two ends is routed, and the cheapest - its length, bends, crossings and
+        crowding, plus the price of crowding an end in among others - wins."""
         lines = self.lines(exclude)
+        names = self.names(exclude)
         boxes = list(self.boxes.values())
         s_base = [p for p, _ in self._options(start, end, False, [], exclude)]
         e_base = [p for p, _ in self._options(end, start, True, [], exclude)]
@@ -1286,29 +1591,84 @@ class _Layout:
             for ep, e_price in self._options(end, start, True, s_base, exclude):
                 if sp == ep:
                     continue
-                pts = rt.route(sp, start.direction, ep, end.direction, boxes, self.frame, lines)
-                cost = rt.route_cost(pts, lines) + s_price + e_price
+                pts = rt.route(sp, start.direction, ep, end.direction, boxes, self.frame, lines,
+                               labels=names)
+                cost = rt.route_cost(pts, lines, names) + s_price + e_price
                 if best is None or cost < best[0]:
                     best = (cost, pts)
         if best is None:
             raise EditError("There is no way to draw that arrow: its two ends meet.")
-        return best[1]
+        return best[1], best[0]
+
+    def plan_branch(self, trunks, end: _Anchor):
+        """Where to fork a branch off one of ``trunks`` (segments of one flow) and how to route
+        it to ``end``: every straight piece long enough is tried at its middle, near either
+        end, and level with (or a turn's length before) each place worth trying at the target,
+        leaving to either side; the cheapest route wins. Returns the segment forked, the fork
+        point, the number of the piece it is on, and the branch's route."""
+        lines = self.lines()  # the trunk included: a branch must not run back along it
+        names = self.names()
+        boxes = list(self.boxes.values())
+        targets = self._options(end, None, True, [], None)[:4]
+        best = None
+        pieces = [(trunk, k, p, q) for trunk in trunks
+                  for route in [self.routes.get(trunk.sector_id) or list(trunk.points)]
+                  for k, (p, q) in enumerate(zip(route, route[1:]))]
+        for trunk, k, p, q in pieces:
+            horizontal = p[1] == q[1]
+            along = 0 if horizontal else 1
+            lo, hi = sorted((p[along], q[along]))
+            if hi - lo < 2 * _FORK_CLEAR:
+                continue
+            spots = {(lo + hi) / 2, lo + _FORK_CLEAR, hi - _FORK_CLEAR}
+            for e, _ in targets:
+                spots.add(e[along])
+                spots.add(e[along] - end.direction[along] * _APPROACH)
+            spots = {min(hi - _FORK_CLEAR, max(lo + _FORK_CLEAR, c)) for c in spots}
+            ways = (rt.UP, rt.DOWN) if horizontal else (rt.LEFT, rt.RIGHT)
+            for c in sorted(spots):
+                fork = (c, p[1]) if horizontal else (p[0], c)
+                for way in ways:
+                    for e, price in targets:
+                        pts = rt.route(fork, way, e, end.direction, boxes, self.frame,
+                                       lines, labels=names)
+                        cost = rt.route_cost(pts, lines, names) + price
+                        if best is None or cost < best[0]:
+                            best = (cost, trunk, fork, k, pts)
+        if best is None:
+            raise EditError(f"Arrow segment {trunks[0].sector_id} has no straight piece long "
+                            f"enough to fork from.")
+        return best[1:]
 
     def place_label(self, text: str, size: float, points, exclude: Optional[int] = None):
         labels = [r for s, r in self.labels.items() if s != exclude] + self.texts
         return _place_label(text, size, points, list(self.boxes.values()), labels, self.frame,
                             self.lines(exclude))
 
-    def label_fits(self, box, points, sector: int) -> bool:
-        """Is a name still fine where it is: near its route, clear of boxes, other names and
-        every line (its own included), and off the ends where heads and brackets go?"""
-        if _distance_to_route(box, points) > _LABEL_NEAR:
+    def label_fits(self, box, points, sector: int, tilde: bool = False) -> bool:
+        """Is a name still fine where it is: near its route (a name with a zig-zag may be
+        further off), clear of boxes, other names and every line (its own included), and off
+        the ends where heads and brackets go?"""
+        own = _distance_to_route(box, points)
+        if own > (_TILDE_NEAR if tilde else _LABEL_NEAR):
             return False
+        if not tilde and any(_distance_to_route(box, [p, q]) < own - 1.0
+                             for p, q in self.lines(sector)):
+            return False  # nearer another arrow's line than its own: it reads as that one's
         keep_off = list(self.boxes.values()) + self.texts + \
             [r for s, r in self.labels.items() if s != sector] + \
             [_seg_box(p, q) for p, q in self.lines()] + \
-            [(p[0] - 10.0, p[1] - 10.0, 20.0, 20.0) for p in (points[0], points[-1])]
+            [(points[-1][0] - 9.0, points[-1][1] - 9.0, 18.0, 18.0)]
         return _label_clear(box, keep_off, self.frame)
+
+    def crowding(self, anchor: _Anchor, point, exclude: Optional[int] = None) -> float:
+        """What an end at ``point`` pays for sitting closer than the usual spacing to the other
+        ends on its side - the same price attach_options puts on a crowded spot."""
+        if anchor.point is not None:
+            return 0.0
+        axis = 1 if anchor.side in (rt.SIDE_LEFT, rt.SIDE_RIGHT) else 0
+        gap = min((abs(point[axis] - t) for t in self.taken(anchor, exclude)), default=1e9)
+        return 0.0 if gap >= 12.0 else 10.0 + rt.CROWDED * (12.0 - gap)
 
 
 def _font_size_of(style) -> float:
@@ -1321,45 +1681,86 @@ def _font_size_of(style) -> float:
 
 
 def _place_label(text: str, size: float, points, boxes, labels, frame_rect, lines=()):
-    """The rectangle an arrow's name goes in: beside the longest straight piece of its route
+    """The rectangle an arrow's name goes in, and whether it needs a zig-zag back to the line:
+    beside the longest straight piece of its route
     that has room - above a horizontal piece or right of a vertical one, else the other side,
     centred on it or flush with either end - clear of boxes, other names, other arrows' lines
     and the ends of its own (where the head or a tunnel bracket goes), inside the sheet. A
-    name that fits nowhere on one or two lines is tried again wrapped narrower."""
-    keep_off = list(boxes) + list(labels) + [_seg_box(p, q) for p, q in lines]
-    keep_off += [_seg_box(p, q) for p, q in zip(points, points[1:])]  # its own other pieces
-    for p in (points[0], points[-1]):
-        keep_off.append((p[0] - 10.0, p[1] - 10.0, 20.0, 20.0))
+    name that fits nowhere on one or two lines is tried again wrapped narrower, and then at
+    more places along each piece. Where no place is clear, the one in the way of least - a box
+    worst, another name next, a line least - is taken; never one off the sheet."""
+    head = points[-1]  # the arrowhead (or a tunnel bracket) is drawn at the end
+    weighted = [(r, 100.0) for r in boxes] + [(r, 60.0) for r in labels] + \
+        [(_seg_box(p, q), 8.0) for p, q in lines] + \
+        [(_seg_box(p, q), 8.0) for p, q in zip(points, points[1:])] + \
+        [((head[0] - 9.0, head[1] - 9.0, 18.0, 18.0), 20.0)]
+    fx, fy, fw, fh = frame_rect
 
-    def clear(r) -> bool:
-        return _label_clear(r, keep_off, frame_rect)
+    def inside(r) -> bool:
+        return fx + 2 <= r[0] and fy + 2 <= r[1] and r[0] + r[2] <= fx + fw - 2 \
+            and r[1] + r[3] <= fy + fh - 2
+
+    def trouble(r) -> float:
+        score = sum(weight for o, weight in weighted if _overlaps(r, o, 1.5))
+        # A name nearer another arrow's line than its own reads as that arrow's.
+        own = _distance_to_route(r, points)
+        if any(_distance_to_route(r, [p, q]) < own - 1.0 for p, q in lines):
+            score += 6.0
+        return score
 
     pieces = sorted(zip(points, points[1:]),
                     key=lambda ab: -(abs(ab[1][0] - ab[0][0]) + abs(ab[1][1] - ab[0][1])))
-    first = None
-    for wrap_width in (_LABEL_WRAP, 75.0, 50.0):
-        rows = wrap(text, wrap_width, size) or [text]
-        w = max(text_width(row, size) for row in rows) + 4.0
-        h = len(rows) * _LINE_HEIGHT * size
-        for a, b in pieces:
-            mx, my = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
-            if a[1] == b[1]:
-                x0, x1 = sorted((a[0], b[0]))
-                xs = [mx - w / 2, x0 + 12.0, x1 - w - 12.0]
-                options = [(x, y, w, h) for y in (my - h - 3.0, my + 3.0) for x in xs]
-            else:
-                y0, y1 = sorted((a[1], b[1]))
-                ys = [my - h / 2, y0 + 12.0, y1 - h - 12.0]
-                options = [(x, y, w, h) for x in (mx + 4.0, mx - w - 4.0) for y in ys]
-            for r in options:
-                if first is None:
-                    first = r
-                if clear(r):
-                    return r
-    return first or (points[0][0], points[0][1] - 13.0, 40.0, 10.0)
+    best = None
+    # Beside the line first (gap 3 or 4); then, where that is crowded, further off - a name
+    # tied back to its line by a zig-zag, as Ramus draws one.
+    for gap, dense in ((None, False), (None, True), (16.0, True), (28.0, True), (44.0, True)):
+        tilde = gap is not None
+        for wrap_width in (_LABEL_WRAP, 75.0, 50.0):
+            rows = wrap(text, wrap_width, size) or [text]
+            w = max(text_width(row, size) for row in rows) + 4.0
+            h = len(rows) * _LINE_HEIGHT * size
+            for a, b in pieces:
+                mx, my = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
+                if a[1] == b[1]:
+                    x0, x1 = sorted((a[0], b[0]))
+                    xs = _spread(x0, x1, w) if dense else [mx - w / 2, x0 + 12.0, x1 - w - 12.0]
+                    off = gap if tilde else 3.0
+                    options = [(x, y, w, h) for y in (my - h - off, my + off) for x in xs]
+                else:
+                    y0, y1 = sorted((a[1], b[1]))
+                    ys = _spread(y0, y1, h) if dense else [my - h / 2, y0 + 12.0, y1 - h - 12.0]
+                    off = gap if tilde else 4.0
+                    options = [(x, y, w, h) for x in (mx + off, mx - w - off) for y in ys]
+                for r in options:
+                    if not inside(r):
+                        continue
+                    score = trouble(r)
+                    if score == 0:
+                        return r, tilde
+                    score += 0.5 if tilde else 0.0
+                    if best is None or score < best[0]:
+                        best = (score, r, tilde)
+    if best is not None:
+        return best[1], best[2]
+    x = min(max(points[0][0], fx + 2), fx + fw - 42)
+    y = min(max(points[0][1] - 13.0, fy + 2), fy + fh - 12)
+    return (x, y, 40.0, 10.0), False
 
 
-_LABEL_NEAR = 24.0  # a name farther than this from its route has lost touch with it
+def _spread(lo: float, hi: float, size: float, step: float = 8.0) -> List[float]:
+    """Starts for a name ``size`` long sliding beside a piece from ``lo`` to ``hi`` - from
+    overhanging one end by half to overhanging the other, middle first."""
+    first, last = lo - size / 2, hi - size / 2
+    out = [(first + last) / 2]
+    t = first
+    while t <= last:
+        out.append(t)
+        t += step
+    return out
+
+
+_LABEL_NEAR = 24.0  # a name farther than this from its route has lost touch with it ...
+_TILDE_NEAR = 64.0  # ... unless a zig-zag ties it back
 
 
 def _seg_box(p, q):

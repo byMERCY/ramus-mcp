@@ -124,6 +124,17 @@ class Ids(unittest.TestCase):
             out = doc.save(os.path.join(tmp, "x.rsf"))
             self.assertEqual(RsfDocument(out).sequence("crosspoint_sequence"), first + 2)
 
+    def test_a_dropped_member_is_left_out_of_the_saved_file(self):
+        doc = RsfDocument(self.path)
+        name = doc.members()[0]
+        self.assertTrue(doc.drop_member(name))
+        self.assertFalse(doc.drop_member(name))
+        self.assertTrue(doc.changed)
+        out = os.path.join(self._dir.name, "less.rsf")
+        doc.save(out)
+        with zipfile.ZipFile(out) as z:
+            self.assertNotIn(name, z.namelist())
+
     def test_saving_never_replaces_a_file_by_accident(self):
         doc = RsfDocument(self.path)
         with self.assertRaises(FileExistsError):
@@ -585,6 +596,136 @@ class Moving(_OnTiny):
         self.editor.save(out)
         sheet = next(d for d in RsfModel(out).diagrams() if d.parent_id == fx.TOP)
         self.assertEqual(sorted(a.sector_id for a in sheet.arrows), [30, 31, 32, 33, 34, 35, 36])
+
+
+class Forking(_OnTiny):
+    """Branching off arrow 30 (frame -> C1 input, along y = 100 from x 7 to 120)."""
+
+    def _branch(self, **target):
+        target = target or {"activity": fx.C2, "role": "control"}
+        return self.editor.add_arrow(fx.TOP, {"arrow": 30}, target)
+
+    def test_the_arrow_is_cut_at_the_fork_and_carries_on_as_a_new_segment(self):
+        r = self._branch()
+        arrows = self._arrows()
+        trunk, rest, branch = arrows[30], arrows[r["fork"]["continuation"]], arrows[r["sector"]]
+        fork = tuple(r["fork"]["at"])
+        self.assertEqual(trunk.points[0], (7.0, 100.0))
+        self.assertEqual(trunk.points[-1], fork)
+        self.assertEqual(rest.points[0], fork)
+        self.assertEqual(rest.points[-1], (120.0, 100.0))
+        self.assertEqual(branch.points[0], fork)
+        self.assertEqual(fork[1], 100.0)
+        self.assertTrue(7.0 < fork[0] < 120.0)
+
+    def test_the_ends_and_nodes_are_wired_as_ramus_wires_a_fork(self):
+        r = self._branch()
+        arrows = self._arrows()
+        trunk, rest, branch = arrows[30], arrows[r["fork"]["continuation"]], arrows[r["sector"]]
+        self.assertEqual(trunk.end.kind, "junction")
+        self.assertEqual(rest.start.kind, "junction")
+        self.assertEqual(branch.start.kind, "junction")
+        self.assertEqual(trunk.end.node, rest.start.node)
+        self.assertEqual(trunk.end.node, branch.start.node)
+        # The old end - C1's input, on node 101 - moved to the continuation, link and all.
+        self.assertEqual((rest.end.kind, rest.end.activity_id, rest.end.node),
+                         ("activity", fx.C1, 101))
+        self.assertEqual((branch.end.activity_id, branch.end.role), (fx.C2, "control"))
+        self.assertEqual({trunk.stream_id, rest.stream_id, branch.stream_id}, {fx.S_DATA})
+
+    def test_the_fork_point_shares_its_ordinates_and_marks_its_pieces(self):
+        r = self._branch()
+        trunk_end = self._points_rows(30)[-1]
+        rest_start = self._points_rows(r["fork"]["continuation"])[0]
+        branch_start, branch_next = self._points_rows(r["sector"])[:2]
+        for row in (rest_start, branch_start):
+            self.assertEqual(row["X_ORDINATE_ID"], trunk_end["X_ORDINATE_ID"])
+            self.assertEqual(row["Y_ORDINATE_ID"], trunk_end["Y_ORDINATE_ID"])
+        self.assertEqual(trunk_end["POINT_TYPE"], "0")      # the trunk arrives horizontally
+        self.assertEqual(rest_start["POINT_TYPE"], "0")     # ... and carries on so
+        self.assertEqual(branch_start["POINT_TYPE"],        # the branch leaves vertically
+                         "1" if branch_start["X_POSITION"] == branch_next["X_POSITION"] else "0")
+
+    def test_only_the_trunk_keeps_the_name(self):
+        r = self._branch()
+        arrows = self._arrows()
+        self.assertIsNotNone(arrows[30].label)
+        self.assertIsNone(arrows[r["fork"]["continuation"]].label)
+        self.assertIsNone(arrows[r["sector"]].label)
+
+    def test_a_branch_with_a_name_of_its_own_is_a_new_flow_and_shows_it(self):
+        r = self.editor.add_arrow(fx.TOP, {"arrow": 30}, {"activity": fx.C2, "role": "input"},
+                                  "часть данных")
+        branch = self._arrows()[r["sector"]]
+        self.assertNotEqual(branch.stream_id, fx.S_DATA)
+        self.assertEqual(branch.name, "часть данных")
+        self.assertIsNotNone(branch.label)
+
+    def test_the_branch_is_routed_clear_of_the_boxes(self):
+        r = self._branch()
+        pts = self._arrows()[r["sector"]].points
+        for a in self._sheet(fx.TOP).activities:
+            inside = (a.x + 1, a.y + 1, a.width - 2, a.height - 2)
+            for p, q in _pieces(pts):
+                self.assertTrue(p[0] == q[0] or p[1] == q[1])
+                self.assertFalse(_touches(_seg_rect(p, q), inside), (a.name, p, q))
+
+    def test_deleting_the_branch_leaves_the_arrow_whole_in_two_pieces(self):
+        r = self._branch()
+        self.editor.delete_arrow(r["sector"])
+        arrows = self._arrows()
+        self.assertIn(30, arrows)
+        self.assertIn(r["fork"]["continuation"], arrows)
+
+    def test_what_cannot_be_branched_is_refused(self):
+        with self.assertRaises(EditError):
+            self._branch(activity=fx.C1, role="control")       # back into the box it feeds
+        with self.assertRaises(EditError):
+            self.editor.add_arrow(fx.TOP, {"arrow": 36}, {"activity": fx.C2, "role": "input"})
+        with self.assertRaises(EditError):
+            self.editor.add_arrow(fx.TOP, {"activity": fx.C1}, {"arrow": 30})
+
+    def test_the_forked_model_saves_and_reads_back(self):
+        r = self._branch()
+        out = os.path.join(self._dir.name, "forked.rsf")
+        self.editor.save(out)
+        sheet = next(d for d in RsfModel(out).diagrams() if d.parent_id == fx.TOP)
+        ids = {a.sector_id for a in sheet.arrows}
+        self.assertTrue({30, r["sector"], r["fork"]["continuation"]} <= ids)
+
+
+class Tidying(_OnTiny):
+
+    def _spoil(self, sector, points):
+        """Give a segment a silly detour, as a hand might."""
+        from model_editor import _Anchor
+        fixed = _Anchor((0, 0, 0, 0), 0, (1.0, 0.0), "fixed", point=points[0])
+        self.editor._replace_route(sector, points, fixed, fixed)
+
+    def test_a_detour_is_straightened(self):
+        self._spoil(34, [(350.0, 7.0), (350.0, 30.0), (520.0, 30.0), (520.0, 90.0),
+                         (350.0, 90.0), (350.0, 120.0)])
+        result = self.editor.tidy_sheet(fx.TOP)
+        self.assertIn(34, result["rerouted"])
+        pts = self._arrows()[34].points
+        self.assertEqual(len(pts), 2)
+        self.assertEqual(pts[-1][1], 120.0)  # still into C2's top
+
+    def test_tidying_keeps_every_arrow_on_its_ends(self):
+        before = {s: (a.start.kind, a.start.activity_id, a.start.side, a.end.kind,
+                      a.end.activity_id, a.end.side) for s, a in self._arrows().items()}
+        self.editor.tidy_sheet(fx.TOP)
+        after = {s: (a.start.kind, a.start.activity_id, a.start.side, a.end.kind,
+                     a.end.activity_id, a.end.side) for s, a in self._arrows().items()}
+        self.assertEqual(before, after)
+        for a in self._sheet(fx.TOP).arrows:
+            for p, q in _pieces(a.points):
+                self.assertTrue(p[0] == q[0] or p[1] == q[1], (a.sector_id, p, q))
+
+    def test_a_tidy_sheet_is_left_alone(self):
+        self.editor.tidy_sheet(fx.TOP)
+        again = self.editor.tidy_sheet(fx.TOP)
+        self.assertEqual(again["rerouted"], [])
 
 
 class Deleting(_OnTiny):

@@ -247,6 +247,7 @@ class RsfDocument:
         self._tables: Dict[str, Table] = {}
         self._sequences_text = self._members.get(SEQUENCES, b"").decode("utf-8")
         self._sequences_dirty = False
+        self._dropped = False
         self._next_element: Optional[int] = None
         self._handed_out: Dict[str, int] = {}
 
@@ -264,6 +265,16 @@ class RsfDocument:
                     names.append(n[len("data/"):-len(".xml")])
         return names
 
+    def drop_member(self, name: str) -> bool:
+        """Leave a member out of the file when it is written (e.g. ``user/gui/session.binary``,
+        Ramus's record of which diagrams were open). False if there was no such member."""
+        if name not in self._members:
+            return False
+        self._infos = [i for i in self._infos if i.filename != name]
+        del self._members[name]
+        self._dropped = True
+        return True
+
     def has_table(self, name: str) -> bool:
         return ("data/" + name + ".xml") in self._members
 
@@ -278,7 +289,8 @@ class RsfDocument:
 
     @property
     def changed(self) -> bool:
-        return self._sequences_dirty or any(t.dirty for t in self._tables.values())
+        return self._sequences_dirty or self._dropped or \
+            any(t.dirty for t in self._tables.values())
 
     # ---------------------------------------------------- branches & names
 

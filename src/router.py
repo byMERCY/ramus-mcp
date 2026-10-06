@@ -31,6 +31,7 @@ OFF_CENTRE = 0.05  # per unit a turn sits away from halfway between the ends - a
 CROSSING = 30.0  # crossing an existing arrow
 OVERLAP = 90.0  # running along one: this much for each piece that does ...
 OVERLAP_PER_UNIT = 3.0  # ... and this much per unit of length drawn on top of it
+THROUGH_LABEL = 45.0  # running through another arrow's name
 NEAR = 16.0  # closer than this alongside another arrow reads as crowding ...
 NEAR_PER_UNIT = 1.5  # ... and costs this much per unit of length it does so
 
@@ -97,6 +98,11 @@ def _line_cost(a: Point, b: Point, lines: Sequence[Segment]) -> float:
     return cost
 
 
+def _label_cost(a: Point, b: Point, labels: Sequence[Rect]) -> float:
+    """What drawing a-b costs in names it runs through."""
+    return THROUGH_LABEL * sum(1 for r in labels if _crosses_rect(a, b, r))
+
+
 def _direction(a: Point, b: Point) -> Point:
     if a[1] == b[1]:
         return RIGHT if b[0] > a[0] else LEFT
@@ -121,7 +127,7 @@ def simplify(points: Iterable[Point]) -> List[Point]:
 
 def route(start: Point, start_dir: Point, end: Point, end_dir: Point,
           obstacles: Sequence[Rect], bounds: Rect, lines: Sequence[Segment] = (),
-          margin: float = MARGIN) -> List[Point]:
+          margin: float = MARGIN, labels: Sequence[Rect] = ()) -> List[Point]:
     """An orthogonal route from ``start`` to ``end``.
 
     ``start_dir`` is the way the route leaves ``start`` (out of the side of a box, or into the
@@ -145,6 +151,9 @@ def route(start: Point, start_dir: Point, end: Point, end_dir: Point,
     for r in obstacles:
         xs.update((r[0] - margin, r[0] + r[2] + margin))
         ys.update((r[1] - margin, r[1] + r[3] + margin))
+        # ... and just outside the clearance, so a narrow gap can take two lines side by side
+        xs.update((r[0] - clearance - 1, r[0] + r[2] + clearance + 1))
+        ys.update((r[1] - clearance - 1, r[1] + r[3] + clearance + 1))
     for a in obstacles:  # the middle of each gap between two boxes: a corridor's centre line
         for b in obstacles:
             if a[0] + a[2] < b[0]:
@@ -200,7 +209,7 @@ def route(start: Point, start_dir: Point, end: Point, end_dir: Point,
                             if not _inside(start, r) and not _inside(end, r)):
         neighbours[start].append(end)
 
-    best = _cheapest(start, start_dir, end, end_dir, neighbours, lines, stub_cost)
+    best = _cheapest(start, start_dir, end, end_dir, neighbours, lines, stub_cost, labels)
     if best is None:
         # Nowhere clear to go: an elbow, the honest fallback.
         s1 = (start[0] + start_dir[0] * margin, start[1] + start_dir[1] * margin)
@@ -212,7 +221,8 @@ def route(start: Point, start_dir: Point, end: Point, end_dir: Point,
 
 def _cheapest(start: Point, start_dir: Point, end: Point, end_dir: Point,
               neighbours: Dict[Point, List[Point]], lines: Sequence[Segment],
-              stub_cost: Dict[Tuple[Point, Point], float]) -> Optional[List[Point]]:
+              stub_cost: Dict[Tuple[Point, Point], float],
+              labels: Sequence[Rect] = ()) -> Optional[List[Point]]:
     """Dijkstra over (node, heading), so bends can be priced."""
     start_state = (start, start_dir)
     dist = {start_state: 0.0}
@@ -234,7 +244,8 @@ def _cheapest(start: Point, start_dir: Point, end: Point, end_dir: Point,
             step = abs(nxt[0] - node[0]) + abs(nxt[1] - node[1])
             extra = BEND if d != heading else 0.0
             extra += stub_cost.get((node, nxt), 0.0)
-            new = cost + step + extra + _line_cost(node, nxt, lines)
+            new = (cost + step + extra + _line_cost(node, nxt, lines)
+                   + _label_cost(node, nxt, labels))
             if new < dist.get((nxt, d), float("inf")):
                 dist[(nxt, d)] = new
                 came[(nxt, d)] = (node, heading)
@@ -303,7 +314,14 @@ def attach_options(box: Rect, side: int, taken: Sequence[float],
     for c in prefer:
         if c is not None and gap(c) >= spacing:
             offer(c, 0.0)
-    for i, f in enumerate(_EVEN):
+    for i, f in enumerate(_EVEN[:3]):  # the middle and the thirds
+        c = lo + (hi - lo) * f
+        if gap(c) >= spacing:
+            offer(c, 1.0 + 0.5 * i)
+    for c in (lo, hi):  # the two ends of the side, if free: often what keeps arrows apart
+        if gap(c) >= spacing:
+            offer(c, 2.5)
+    for i, f in enumerate(_EVEN[3:], start=3):
         c = lo + (hi - lo) * f
         if gap(c) >= spacing:
             offer(c, 1.0 + 0.5 * i)
@@ -314,13 +332,15 @@ def attach_options(box: Rect, side: int, taken: Sequence[float],
     return out
 
 
-def route_cost(points: Sequence[Point], lines: Sequence[Segment] = ()) -> float:
+def route_cost(points: Sequence[Point], lines: Sequence[Segment] = (),
+               labels: Sequence[Rect] = ()) -> float:
     """What a finished route costs by the router's own measure: its length, a price per bend,
     and its crossings of and runs along the arrows in ``lines``."""
     pieces = list(zip(points, points[1:]))
     cost = sum(abs(b[0] - a[0]) + abs(b[1] - a[1]) for a, b in pieces)
     cost += BEND * max(0, len(points) - 2)
-    return cost + sum(_line_cost(a, b, lines) for a, b in pieces if a != b)
+    return cost + sum(_line_cost(a, b, lines) + _label_cost(a, b, labels)
+                      for a, b in pieces if a != b)
 
 
 def point_on(box: Rect, side: int, along: float) -> Point:
