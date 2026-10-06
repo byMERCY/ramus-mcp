@@ -225,7 +225,9 @@ class _Element:
 class RsfModel:
     """A loaded .rsf file, read lazily table by table."""
 
-    def __init__(self, path: str):
+    def __init__(self, path):
+        """``path`` is a file name or a binary file object - the editor hands an in-memory copy
+        of a file with unsaved changes."""
         self._zip = zipfile.ZipFile(path)
         self._cache: Dict[str, List[Dict[str, Optional[str]]]] = {}
         self._memo: Dict[str, object] = {}
