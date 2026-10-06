@@ -42,6 +42,7 @@ class _Open:
     model: Optional[RsfModel] = None
     diagrams: List[Diagram] = []
     activities: Dict[int, Activity] = {}
+    findings: List[rules.Finding] = []
 
 
 def _refresh() -> None:
@@ -51,6 +52,7 @@ def _refresh() -> None:
     _Open.model = _Open.editor.snapshot()
     _Open.diagrams = _Open.model.diagrams()
     _Open.activities = _Open.model.activities()
+    _Open.findings = rules.check(_Open.model)
 
 
 def _activity_id(ref: Any) -> int:
@@ -88,9 +90,22 @@ def _end_ref(spec: Any) -> Dict[str, Any]:
     return out
 
 
+def _finding_key(f: rules.Finding):
+    return (f.rule, f.sheet, f.activity, f.flow, f.segment)
+
+
 def _edited(result: Dict[str, Any]) -> Dict[str, Any]:
+    """After a change: the model read again, and what the change did to its IDEF0 standing -
+    the findings it brought in (often a to-do: a new box has no arrows yet) and how many it
+    settled, with the model's totals."""
+    before = {_finding_key(f) for f in _Open.findings}
     _refresh()
+    after = {_finding_key(f) for f in _Open.findings}
     result["unsaved_changes"] = True
+    result["idef0"] = dict(rules.summary(_Open.findings),
+                           new=[f.as_dict() for f in _Open.findings
+                                if _finding_key(f) not in before],
+                           resolved=len(before - after))
     return result
 
 
@@ -349,13 +364,15 @@ def check_model(sheet: Optional[str] = None) -> Dict[str, Any]:
     an arrow from frame to frame touching no box.
 
     Each finding names its rule, sheet, box / flow / segment, and - where an editing tool
-    mends it - the call to make. Check again after fixing: one change can settle several.
+    mends it - the call to make. Every editing tool also reports, under ``idef0``, the findings
+    its change brought in and how many it settled, so a sheet can be put right as it is drawn.
     """
     _require()
     if sheet and not any(d.node.lower() == sheet.strip().lower() for d in _Open.diagrams):
         raise ValueError(f"No sheet {sheet!r}. This model has: "
                          f"{', '.join(sorted(d.node for d in _Open.diagrams))}.")
-    found = rules.check(_Open.model, sheet)
+    found = _Open.findings if not sheet else \
+        [f for f in _Open.findings if f.sheet.lower() == sheet.strip().lower()]
     result: Dict[str, Any] = {"checked": sheet.strip() if sheet else "whole model"}
     result.update(rules.summary(found))
     result["findings"] = [f.as_dict() for f in found]

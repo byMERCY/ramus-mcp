@@ -67,6 +67,9 @@ what it finds, each with the editing call that mends it:
   come down from above but not drawn on to a box), fewer than 3 or more than 6 boxes on a sheet,
   an activity not named by a verb or a flow named by one, an arrow from frame to frame.
 
+Every editing tool also answers with `idef0`: the findings its change brought in and how many it
+settled, so a sheet is put right while it is being drawn.
+
 **Hands.** Activities and sheets are named by IDEF0 number (`"A12"`; a sheet by the activity it
 decomposes, `"A-0"` for the context diagram) or by id. Every change shows up at once in the reading
 tools, so it can be looked at before anything is written.

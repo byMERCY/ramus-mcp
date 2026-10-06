@@ -252,6 +252,16 @@ class Editing(unittest.TestCase):
         self.assertFalse([f for f in server.check_model()["findings"] if f["rule"] == "not_joined"])
         self.assertTrue(server.current_model()["unsaved_changes"])
 
+    def test_each_edit_says_what_it_broke_and_what_it_settled(self):
+        box = server.add_activity("A0", "Проверить")
+        new = {(f["rule"], f.get("activity")) for f in box["idef0"]["new"]}
+        self.assertTrue({("needs_control", "A3"), ("needs_output", "A3")} <= new, new)
+        arrow = server.add_arrow("A0", {"frame": "control"}, {"activity": "A3", "role": "control"},
+                                 "регламент")
+        self.assertGreaterEqual(arrow["idef0"]["resolved"], 1)
+        self.assertNotIn("needs_control", {f["rule"] for f in arrow["idef0"]["new"]})
+        self.assertTrue({"errors", "warnings", "new", "resolved"} <= set(arrow["idef0"]))
+
     def test_check_one_sheet_and_an_unknown_one(self):
         report = server.check_model("A1")
         self.assertEqual(report["checked"], "A1")
