@@ -465,10 +465,11 @@ def add_arrow(sheet: str, source: Dict[str, Any], target: Dict[str, Any],
     {"frame": "input" | "control" | "mechanism"} - coming in from outside the decomposed
     activity - or {"arrow": segment} - a branch forking off an arrow already on the sheet
     (a segment id from get_diagram). ``target``: {"activity": "A2", "role": "input" |
-    "control" | "mechanism"}, or {"frame": "output"} - leaving it. Give ``name`` for a new
-    flow (a noun phrase) or ``flow`` (a stream id from get_diagram) to draw an existing one.
-    A branch carries the flow it forks from and shows no name of its own unless it is given
-    a name of its own (then it is a new flow - part of what the trunk carries).
+    "control" | "mechanism"}, {"frame": "output"} - leaving it - or {"arrow": segment} -
+    joining an arrow already on the sheet. Give ``name`` for a new flow (a noun phrase) or
+    ``flow`` (a stream id from get_diagram) to draw an existing one. A branch or a join
+    carries the flow of the arrow it forks from or joins and shows no name of its own, unless
+    it is given a name of its own (then it is a new flow - a part of what that arrow carries).
 
     An end on the frame, or on a box that has its own decomposition, is joined to the same
     flow on the other level when that arrow is there and not yet continued (matched by flow,

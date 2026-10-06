@@ -694,6 +694,90 @@ class Forking(_OnTiny):
         self.assertTrue({30, r["sector"], r["fork"]["continuation"]} <= ids)
 
 
+class Joining(_OnTiny):
+    """Joining arrow 34 (frame top -> C2 control, down x = 350 from y 7 to 120)."""
+
+    def _join(self, name=None, source=None):
+        return self.editor.add_arrow(fx.TOP, source or {"frame": "control"}, {"arrow": 34}, name)
+
+    def test_the_arrow_is_cut_at_the_join_and_carries_on_into_the_box(self):
+        r = self._join()
+        arrows = self._arrows()
+        trunk, rest, branch = arrows[34], arrows[r["join"]["continuation"]], arrows[r["sector"]]
+        at = tuple(r["join"]["at"])
+        self.assertEqual((trunk.points[0], trunk.points[-1]), ((350.0, 7.0), at))
+        self.assertEqual((rest.points[0], rest.points[-1]), (at, (350.0, 120.0)))
+        self.assertEqual(branch.points[-1], at)
+        self.assertEqual(at[0], 350.0)
+        self.assertTrue(7.0 < at[1] < 120.0)
+
+    def test_the_ends_and_nodes_are_wired_as_ramus_wires_a_join(self):
+        r = self._join()
+        arrows = self._arrows()
+        trunk, rest, branch = arrows[34], arrows[r["join"]["continuation"]], arrows[r["sector"]]
+        self.assertEqual((trunk.end.kind, rest.start.kind, branch.end.kind),
+                         ("junction", "junction", "junction"))
+        self.assertEqual(len({trunk.end.node, rest.start.node, branch.end.node}), 1)
+        self.assertEqual((rest.end.activity_id, rest.end.role, rest.end.node),
+                         (fx.C2, "control", 106))           # the old end moved over, node and all
+        self.assertEqual((branch.start.kind, branch.start.role), ("frame", "control"))
+        self.assertEqual({trunk.stream_id, rest.stream_id, branch.stream_id}, {fx.S_RULES})
+        self.assertEqual(r["to"], {"joins": 34})
+
+    def test_the_join_point_shares_its_ordinates_and_marks_its_pieces(self):
+        r = self._join()
+        trunk_end = self._points_rows(34)[-1]
+        rest_start = self._points_rows(r["join"]["continuation"])[0]
+        branch_before, branch_end = self._points_rows(r["sector"])[-2:]
+        for row in (rest_start, branch_end):
+            self.assertEqual(row["X_ORDINATE_ID"], trunk_end["X_ORDINATE_ID"])
+            self.assertEqual(row["Y_ORDINATE_ID"], trunk_end["Y_ORDINATE_ID"])
+        self.assertEqual((trunk_end["POINT_TYPE"], rest_start["POINT_TYPE"]), ("1", "1"))
+        self.assertEqual(branch_end["POINT_TYPE"],          # the branch arrives across it
+                         "1" if branch_end["X_POSITION"] == branch_before["X_POSITION"] else "0")
+
+    def test_a_join_of_the_same_flow_shows_no_name_and_one_of_its_own_does(self):
+        same = self._join()
+        self.assertIsNone(self._arrows()[same["sector"]].label)
+        own = self.editor.add_arrow(fx.TOP, {"frame": "mechanism"}, {"arrow": 32}, "отчёт")
+        arrow = self._arrows()[own["sector"]]
+        self.assertNotEqual(arrow.stream_id, fx.S_RESULT)
+        self.assertEqual(arrow.name, "отчёт")
+        self.assertIsNotNone(arrow.label)
+
+    def test_the_join_is_routed_clear_of_the_boxes(self):
+        r = self._join()
+        pts = self._arrows()[r["sector"]].points
+        for a in self._sheet(fx.TOP).activities:
+            inside = (a.x + 1, a.y + 1, a.width - 2, a.height - 2)
+            for p, q in _pieces(pts):
+                self.assertTrue(p[0] == q[0] or p[1] == q[1])
+                self.assertFalse(_touches(_seg_rect(p, q), inside), (a.name, p, q))
+
+    def test_deleting_the_joining_arrow_leaves_the_other_whole_in_two_pieces(self):
+        r = self._join()
+        self.editor.delete_arrow(r["sector"])
+        arrows = self._arrows()
+        self.assertIn(34, arrows)
+        self.assertIn(r["join"]["continuation"], arrows)
+
+    def test_what_cannot_be_joined_is_refused(self):
+        with self.assertRaisesRegex(EditError, "touch no box"):
+            self.editor.add_arrow(fx.TOP, {"arrow": 30}, {"arrow": 34})
+        with self.assertRaisesRegex(EditError, "already starts or ends at the same box"):
+            self._join(source={"activity": fx.C2})          # C2's output into C2's control
+        with self.assertRaisesRegex(EditError, "no arrow segment 999"):
+            self.editor.add_arrow(fx.TOP, {"frame": "control"}, {"arrow": 999})
+
+    def test_the_joined_model_saves_and_reads_back(self):
+        r = self._join()
+        out = os.path.join(self._dir.name, "joined.rsf")
+        self.editor.save(out)
+        sheet = next(d for d in RsfModel(out).diagrams() if d.parent_id == fx.TOP)
+        self.assertTrue({34, r["sector"], r["join"]["continuation"]} <=
+                        {a.sector_id for a in sheet.arrows})
+
+
 class Tidying(_OnTiny):
 
     def _spoil(self, sector, points):

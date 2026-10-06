@@ -341,12 +341,13 @@ class ModelEditor:
         side of a box), ``{"frame": "input" | "control" | "mechanism"}`` - something coming
         in from outside the decomposed activity - or ``{"arrow": segment}``: a branch off an
         arrow already on the sheet, forking from a point on it. ``target`` is where it goes:
-        ``{"activity": id, "role": "input" | "control" | "mechanism"}``, or
-        ``{"frame": "output"}`` - leaving the decomposed activity.
+        ``{"activity": id, "role": "input" | "control" | "mechanism"}``,
+        ``{"frame": "output"}`` - leaving the decomposed activity - or ``{"arrow": segment}``:
+        joining an arrow already on the sheet at a point on it.
 
         The arrow carries a new flow called ``name``, or the existing flow ``flow``; a branch
-        carries the flow of the arrow it forks from unless told otherwise, and then shows no
-        name of its own (as in Ramus). Where it meets the frame, or a box that has a
+        or a join carries the flow of the arrow it forks from or joins unless told otherwise,
+        and then shows no name of its own (as in Ramus). Where it meets the frame, or a box that has a
         decomposition of its own, it is joined to the same flow on the other level if that
         arrow is there and not yet continued - the same flow and the same node, which is what
         keeps IDEF0's arrows balanced between levels. With nothing to join it is left as a
@@ -368,28 +369,35 @@ class ModelEditor:
             raise EditError(f"Activity {sheet_id} has no decomposition to draw on. Add a box "
                             f"under it first (add_activity), or pick a sheet from list_diagrams.")
         on_sheet = {a.element_id: a for a in sheet.activities}
-        src = _end_spec(source, "source", on_sheet, {a.sector_id: a for a in sheet.arrows})
-        dst = _end_spec(target, "target", on_sheet)
-        trunk = src.arrow
-        if src.kind == "frame" and dst.kind == "frame":
-            raise EditError("An arrow from the frame straight back to the frame touches no box. "
-                            "One end has to be on an activity.")
+        by_id = {a.sector_id: a for a in sheet.arrows}
+        src = _end_spec(source, "source", on_sheet, by_id)
+        dst = _end_spec(target, "target", on_sheet, by_id)
+        trunk, join = src.arrow, dst.arrow  # the arrow forked from / the arrow joined
+        other = trunk or join
+        if src.kind == dst.kind and src.kind in ("frame", "arrow"):
+            raise EditError("That arrow would touch no box: from the frame straight back to the "
+                            "frame, or from one arrow straight into another. One end has to be "
+                            "on an activity, or on the frame with the other on an arrow.")
         if src.activity is not None and dst.activity is not None \
                 and src.activity.element_id == dst.activity.element_id:
             raise EditError("An arrow from a box back into the same box is not drawn this way in "
                             "IDEF0; feed the output to another activity.")
-        if trunk is not None and dst.kind == "activity" and any(
-                e.kind == "activity" and e.activity_id == dst.activity.element_id
-                for e in (trunk.start, trunk.end)):
+        far = dst if trunk is not None else src
+        if other is not None and far.kind == "activity" and any(
+                e.kind == "activity" and e.activity_id == far.activity.element_id
+                for e in (other.start, other.end)):
             raise EditError("That branch would lead back into a box the arrow it forks from "
-                            "already starts or ends at.")
+                            "already starts or ends at." if trunk is not None else
+                            "That arrow would join one that already starts or ends at the same "
+                            "box.")
 
         # ---- the flow, and the arrows on the other level it may be joined to
         names = self._stream_names()
-        if trunk is not None and flow is None and not (name and name.strip()):
-            if trunk.stream_id is None:
-                raise EditError("The arrow to branch from carries no flow; give the branch a name.")
-            flow = trunk.stream_id
+        if other is not None and flow is None and not (name and name.strip()):
+            if other.stream_id is None:
+                raise EditError("The arrow to branch from or join carries no flow; give this "
+                                "one a name.")
+            flow = other.stream_id
         if flow is not None:
             if flow not in names:
                 raise EditError(f"There is no flow {flow}. get_diagram reports each arrow's "
@@ -407,7 +415,7 @@ class ModelEditor:
         stubs = []  # inherited stubs this arrow takes over
         for which, spec in (("source", src), ("target", dst)):
             if spec.kind == "arrow":
-                continue  # a fork joins nothing on another level
+                continue  # a fork or a join ties nothing to another level
             partner = self._partner(spec, which, sheet, sheets, acts, stream, label)
             if partner is not None:
                 node, partner_stream, stub = partner
@@ -423,17 +431,22 @@ class ModelEditor:
 
         # ---- geometry
         layout = _Layout(sheet)
-        if trunk is not None:
-            # Any piece of the same flow on the sheet may carry the fork: the arrow named, the
-            # rest of it past a fork, its other branches.
-            kin = [a for a in sheet.arrows if a.has_route and a.flow == trunk.flow
-                   and a.stream_id == trunk.stream_id]
-            trunk, fork, piece, points = layout.plan_branch(kin or [trunk],
-                                                            layout.anchor(dst, "end"))
+        if other is not None:
+            # Any piece of the same flow on the sheet may carry the fork or the join: the arrow
+            # named, the rest of it past a fork, its other branches.
+            kin = [a for a in sheet.arrows if a.has_route and a.flow == other.flow
+                   and a.stream_id == other.stream_id]
+            if trunk is not None:
+                other, at, piece, points = layout.plan_branch(kin or [trunk],
+                                                              layout.anchor(dst, "end"))
+            else:
+                other, at, piece, points = layout.plan_branch(kin or [join],
+                                                              layout.anchor(src, "start"),
+                                                              reverse=True)
         else:
             points = layout.plan(layout.anchor(src, "start"), layout.anchor(dst, "end"))
         style_hex = self._sheet_style(sheet_id)
-        named = trunk is None or stream != trunk.stream_id
+        named = other is None or stream != other.stream_id
         text_box, tilde = layout.place_label(label, _font_size_of(style_hex), points) \
             if named else (None, False)
 
@@ -462,11 +475,14 @@ class ModelEditor:
                 "FUNCTION_TYPE": spec.side if spec.kind == "activity" else -1,
                 "CROSSPOINT": node, "TUNNEL_SOFT": 0,
             })
-        first = None
+        first = last = None
         if trunk is not None:
-            x_ord, y_ord, continuation = self._split(trunk, piece, fork, nodes["source"])
+            x_ord, y_ord, continuation = self._split(other, piece, at, nodes["source"])
             first = (x_ord, y_ord, _point_type(points[0], points[1]))
-        self._write_points(sector, points, first)
+        elif join is not None:
+            x_ord, y_ord, continuation = self._split(other, piece, at, nodes["target"])
+            last = (x_ord, y_ord, _point_type(points[-2], points[-1]))
+        self._write_points(sector, points, first, last)
         if text_box is not None:
             tx, ty, tw, th = text_box
             self._add_value("IDEF0/attribute_sector_properties", "F_SECTOR_PROPERTIES", sector, {
@@ -478,9 +494,9 @@ class ModelEditor:
         else:
             self._add_value("IDEF0/attribute_sector_properties", "F_SECTOR_PROPERTIES", sector,
                             _NO_LABEL)
-        if trunk is not None:  # the trunk is shorter now: keep its name in touch with it
+        if other is not None:  # the arrow cut is shorter now: keep its name in touch with it
             fresh = next(d for d in self.snapshot().diagrams() if d.parent_id == sheet_id)
-            cut = next(a for a in fresh.arrows if a.sector_id == trunk.sector_id)
+            cut = next(a for a in fresh.arrows if a.sector_id == other.sector_id)
             self._relabel(_Layout(fresh), cut, cut.points)
         # A box with no decomposition gets the arrow-to-be of one, as Ramus 3 gives it.
         frame = self.snapshot().frame()
@@ -489,16 +505,17 @@ class ModelEditor:
                 self._add_inherited_stub(spec, which, p, nodes[which], stream, style_hex, frame)
         result = {
             "sector": sector, "stream": stream, "name": label,
-            "from": _describe_end(src), "to": _describe_end(dst),
+            "from": _describe_end(src, "source"), "to": _describe_end(dst, "target"),
             "joined_to_other_level": sorted(links),
             "route": [(round(x, 2), round(y, 2)) for x, y in points],
         }
         moved = self._free_labels(sheet_id, {sector: points})
         if moved:
             result["labels_moved"] = moved
-        if trunk is not None:
-            result["fork"] = {"at": (round(fork[0], 2), round(fork[1], 2)),
-                              "trunk": trunk.sector_id, "continuation": continuation}
+        if other is not None:
+            result["fork" if trunk is not None else "join"] = {
+                "at": (round(at[0], 2), round(at[1], 2)),
+                "trunk": other.sector_id, "continuation": continuation}
         return result
 
     def _split(self, arrow, piece: int, at, node: int) -> Tuple[int, int, int]:
@@ -1444,18 +1461,15 @@ def _end_spec(spec: Dict[str, object], which: str, on_sheet, arrows=None) -> _En
         raise EditError(f'The {which} must be an object such as {{"activity": 12, "role": '
                         f'"input"}} or {{"frame": "input"}}.')
     if "arrow" in spec:
-        if which != "source":
-            raise EditError("An arrow can fork off another one, but not end on one (a join) - "
-                            "not yet. Give the target as a box or the frame.")
+        what = "branch from" if which == "source" else "join"
         try:
             sid = int(spec["arrow"])
         except (TypeError, ValueError):
-            raise EditError(f"The arrow to branch from must be a segment id, not "
-                            f"{spec['arrow']!r}.")
+            raise EditError(f"The arrow to {what} must be a segment id, not {spec['arrow']!r}.")
         arrow = (arrows or {}).get(sid)
         if arrow is None or not arrow.has_route:
-            raise EditError(f"There is no arrow segment {sid} drawn on this sheet to branch "
-                            f"from. get_diagram lists each flow's segments.")
+            raise EditError(f"There is no arrow segment {sid} drawn on this sheet to {what}. "
+                            f"get_diagram lists each flow's segments.")
         return _EndSpec("arrow", -1, arrow=arrow)
     if "frame" in spec:
         role = str(spec["frame"]).lower()
@@ -1487,9 +1501,9 @@ def _end_spec(spec: Dict[str, object], which: str, on_sheet, arrows=None) -> _En
     return _EndSpec("activity", ROLE_SIDE[role], activity=on_sheet[aid], role=role)
 
 
-def _describe_end(spec: _EndSpec) -> Dict[str, object]:
+def _describe_end(spec: _EndSpec, which: str = "source") -> Dict[str, object]:
     if spec.kind == "arrow":
-        return {"branch_of": spec.arrow.sector_id}
+        return {"branch_of" if which == "source" else "joins": spec.arrow.sector_id}
     if spec.kind == "frame":
         return {"frame": spec.role, "side": rt_side_name(spec.side)}
     return {"activity": spec.activity.element_id, "number": spec.activity.number,
@@ -1731,18 +1745,34 @@ class _Layout:
             raise EditError("There is no way to draw that arrow: its two ends meet.")
         return best[1], best[0]
 
-    def plan_branch(self, trunks, end: _Anchor):
+    def plan_branch(self, trunks, end: _Anchor, reverse: bool = False):
         """Where to fork a branch off one of ``trunks`` (segments of one flow) and how to route
         it to ``end``: every straight piece long enough is tried at its middle, near either
-        end, and level with (or a turn's length before) each place worth trying at the target,
-        leaving to either side; the cheapest route wins. Returns the segment forked, the fork
-        point, the number of the piece it is on, and the branch's route."""
+        end, and level with (or a turn's length before) each place worth trying at the other
+        end, leaving to either side; the cheapest route wins. Returns the segment forked, the
+        fork point, the number of the piece it is on, and the branch's route.
+
+        With ``reverse`` it is a join instead: ``end`` is where the new arrow starts, and the
+        route found from the trunk to it is turned round, to run from there into the trunk."""
         lines = self.lines()  # the trunk included: a branch must not run back along it
         names = self.names()
         costs = rt.Costs(lines, names)
         boxes = list(self.boxes.values())
         targets = self._options(end, None, True, [], None)[:4]
-        best = None
+        arrive = _back(end.direction) if reverse else end.direction
+        # A place level with each point tried on the trunk, where the side allows it, so the
+        # branch can run straight across.
+        axis = 1 if end.side in (rt.SIDE_LEFT, rt.SIDE_RIGHT) else 0
+        taken = self.taken(end) if end.point is None else []
+
+        def level_with(point):
+            if end.point is not None:
+                return []
+            return [(rt.point_on(end.rect, end.side, c), 0.0) for c, price in
+                    rt.attach_options(end.rect, end.side, taken, [point[axis]],
+                                      corner=end.corner) if price == 0.0]
+
+        tries = []
         pieces = [(trunk, k, p, q) for trunk in trunks
                   for route in [self.routes.get(trunk.sector_id) or list(trunk.points)]
                   for k, (p, q) in enumerate(zip(route, route[1:]))]
@@ -1755,21 +1785,27 @@ class _Layout:
             spots = {(lo + hi) / 2, lo + _FORK_CLEAR, hi - _FORK_CLEAR}
             for e, _ in targets:
                 spots.add(e[along])
-                spots.add(e[along] - end.direction[along] * _APPROACH)
+                spots.add(e[along] - arrive[along] * _APPROACH)
             spots = {min(hi - _FORK_CLEAR, max(lo + _FORK_CLEAR, c)) for c in spots}
             ways = (rt.UP, rt.DOWN) if horizontal else (rt.LEFT, rt.RIGHT)
             for c in sorted(spots):
                 fork = (c, p[1]) if horizontal else (p[0], c)
                 for way in ways:
-                    for e, price in targets:
-                        pts = rt.route(fork, way, e, end.direction, boxes, self.frame,
-                                       lines, labels=names, costs=costs)
-                        cost = rt.route_cost(pts, costs=costs) + price
-                        if best is None or cost < best[0]:
-                            best = (cost, trunk, fork, k, pts)
+                    for e, price in targets + level_with(fork):
+                        least = rt.least_cost(fork, way, e, arrive) + price
+                        tries.append((least, len(tries), trunk, k, fork, way, e, price))
+        best = None
+        for least, _, trunk, k, fork, way, e, price in sorted(tries, key=lambda t: t[:2]):
+            if best is not None and least >= best[0]:
+                break  # nothing after this can be cheaper than what was found
+            pts = rt.route(fork, way, e, arrive, boxes, self.frame, lines, labels=names,
+                           costs=costs)
+            cost = rt.route_cost(pts, costs=costs) + price
+            if best is None or cost < best[0]:
+                best = (cost, trunk, fork, k, pts[::-1] if reverse else pts)
         if best is None:
             raise EditError(f"Arrow segment {trunks[0].sector_id} has no straight piece long "
-                            f"enough to fork from.")
+                            f"enough to {'join' if reverse else 'fork from'}.")
         return best[1:]
 
     def place_label(self, text: str, size: float, points, exclude: Optional[int] = None):
