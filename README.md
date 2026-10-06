@@ -1,120 +1,136 @@
 # ramus-mcp
 
-An MCP server that gives an AI agent **eyes and hands for Ramus** — the IDEF0/DFD business-process
-models stored in `.rsf` files. Point Claude (or any MCP client) at it and it can open a model, read
-its activity tree and every diagram's arrows, and **see** a diagram rendered as an image — boxes,
-arrows with their heads, names, colours, dashes and tunnels, laid out exactly as Ramus stores them.
-It can **check** the model against the rules of IDEF0, and **change** it — or start one from
-nothing: rename activities and flows, add boxes and arrows — placed and routed the IDEF0 way — and
-save a `.rsf` that Ramus opens.
+An MCP server that gives Claude — or any MCP client — **eyes and hands for Ramus**, the IDEF0
+business-process modelling tool. It opens a model (`.rsf`), reads its activity tree and every
+diagram's arrows, and **sees** a diagram rendered as a picture — boxes, arrows with their heads,
+names, colours, dashes and tunnels, laid out as Ramus stores them. It **checks** the model
+against the rules of IDEF0, **changes** it — boxes and arrows placed and routed the IDEF0 way —
+or **builds one from nothing**, and saves a `.rsf` that Ramus opens.
 
-Original work — it reads the `.rsf` **file format** directly (a ZIP of XML tables) and contains no
-Ramus code, so it needs neither the Ramus application nor Java to run. It reads files saved by both
-Ramus 2.x and Ramus 3.x.
+*По-русски:* коннектор, через который Клод читает, рисует, проверяет по правилам IDEF0, правит и
+создаёт с нуля модели Ramus (`.rsf`).
 
-## Install
+Original work: it reads and writes the `.rsf` **file format** directly (a ZIP of XML tables) and
+contains no Ramus code, so it needs neither Ramus nor Java to run. It reads files of Ramus 2.x and
+3.x, and writes them the way Ramus does — a table it rewrites is byte for byte what Ramus itself
+would write, and every kind of change was checked by opening the result in the Ramus engine.
+
+## Install in Claude Desktop
+
+1. Get `ramus-mcp-<version>.mcpb` (from the releases, or build it — see below).
+2. Open it with Claude Desktop (double-click, or *Settings → Extensions → Install extension*).
+3. Pick the folder you keep your models in. That is all: Claude Desktop sets up Python and the
+   two dependencies itself.
+
+Then ask, for example:
+
+- «Открой модель «поход» и покажи диаграмму A0.»
+- «Проверь модель по правилам IDEF0 и исправь, что можно.»
+- «Создай модель «Провести олимпиаду»: контекстная диаграмма и декомпозиция на 4 работы.»
+- "Tidy up the arrows on A2 and save the model as a copy."
+
+Close a model in Ramus before Claude saves over it. Saving over the opened file first copies it
+to `<name>.backup.rsf`.
+
+## Use it from another MCP client
+
+The server runs over stdio. With [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv run --directory /path/to/ramus-mcp src/server.py
+```
+
+or with a virtual environment:
 
 ```bash
 py -3 -m venv .venv
 .venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python src\server.py
 ```
 
-## Use it from an MCP client
-
-Point any MCP client at the command:
-
-```
-command: .venv\Scripts\python.exe
-args:    src\server.py
-```
-
-A client that reads a project-level `.mcp.json` needs a file like this in the project folder
-(use the absolute paths of your own checkout; the file is git-ignored, so it stays local):
+For Claude Code: `claude mcp add ramus -- uv run --directory /path/to/ramus-mcp src/server.py`.
+A client configured by JSON takes the same command:
 
 ```json
 {
   "mcpServers": {
     "ramus": {
-      "command": "<project folder>\\.venv\\Scripts\\python.exe",
-      "args": ["<project folder>\\src\\server.py"]
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/ramus-mcp", "src/server.py"],
+      "env": { "RAMUS_MODELS_DIR": "/path/to/your/models" }
     }
   }
 }
 ```
 
+`RAMUS_MODELS_DIR` (optional) is where `list_models` looks and where relative paths start.
+
 ## Tools
 
-A diagram is picked by its IDEF0 node number (`node="A1"`; `"A-0"` is the context diagram) or by
-`index` from `list_diagrams`.
+A sheet is named by the activity it decomposes — `"A-0"` is the context diagram, `"A0"` its
+decomposition, then `"A1"`, `"A12"` … — and an activity by its number or id.
+
+**Eyes**
 
 | Tool | What it does |
 |---|---|
-| `open_model(path)` | Open a `.rsf` file and make it the active model |
-| `current_model()` | Which model is open |
-| `list_diagrams()` | The decomposition sheets with node numbers and sizes, largest first |
-| `get_function_tree()` | The whole activity tree, nested, with IDEF0 numbers (A0, A1, A11 …) |
-| `get_diagram(node/index, include_routes)` | One sheet as data: boxes, the flows between them (where each starts and ends, with ICOM roles and tunnels), free text; `include_routes` adds every arrow segment's polyline |
-| `render_diagram(node/index)` | One sheet drawn as a PNG image (the "eyes") |
-| `render_diagram_svg_text(node/index)` | The same sheet as an SVG document |
+| `list_models(folder?)` | The `.rsf` files in the models folder (or another), newest first |
+| `open_model(path)` / `current_model()` | Open a model; say which one is open |
+| `list_diagrams()` | The sheets, with node numbers and sizes |
+| `get_function_tree()` | The whole activity tree with IDEF0 numbers (A0, A1, A11 …) |
+| `get_diagram(node, include_routes?)` | One sheet as data: boxes, the flows between them (each end with its ICOM role, tunnels marked), free text, ids for the hands; `include_routes` adds every segment's polyline |
+| `render_diagram(node)` | One sheet drawn as a PNG — the picture Claude looks at |
+| `render_diagram_svg_text(node)` | The same sheet as SVG |
 
-**Rules.** `check_model(sheet?)` checks the whole model, or one sheet, against IDEF0 and lists
-what it finds, each with the editing call that mends it:
+**Rules.** `check_model(sheet?)` checks the model, or one sheet, against IDEF0 and lists what it
+finds, each with the call that mends it:
 
 - *errors* — the method is broken: an activity with no control or no output, an arrow leaving a
   box other than by its right side or entering by it, an end attached to nothing, a box or an
   arrow with no name;
-- *warnings* — worth a look: ICOM balance (an arrow on one level with no continuation on the
-  other — right only for a tunnel that was meant; one drawn on both levels but not joined; one
-  come down from above but not drawn on to a box), fewer than 3 or more than 6 boxes on a sheet,
-  an activity not named by a verb or a flow named by one, an arrow from frame to frame.
+- *warnings* — worth a look: ICOM balance between levels (an arrow with no continuation on the
+  other level — right only for a tunnel that was meant; one drawn on both levels but not joined;
+  one come down from above but not drawn on to a box), fewer than 3 or more than 6 boxes on a
+  sheet, an activity not named by a verb or a flow named by one, an arrow from frame to frame.
 
 Every editing tool also answers with `idef0`: the findings its change brought in and how many it
 settled, so a sheet is put right while it is being drawn.
 
-**Hands.** Activities and sheets are named by IDEF0 number (`"A12"`; a sheet by the activity it
-decomposes, `"A-0"` for the context diagram) or by id. Every change shows up at once in the reading
-tools, so it can be looked at before anything is written.
+**Hands.** Every change shows at once in the reading tools; nothing is written until `save_model`.
 
 | Tool | What it does |
 |---|---|
-| `create_model(path, activity, author?, project?)` | Start a model from nothing: a new `.rsf` with one IDEF0 model whose context diagram A-0 holds its top activity A0, written as the Ramus 3 desktop application writes a new file |
+| `create_model(path, activity, author?, project?)` | A new model from nothing: a `.rsf` whose context diagram holds the top activity A0, written as the Ramus 3 desktop application writes a new file |
 | `rename_activity(activity, name)` | Rename a box |
 | `rename_flow(flow, name)` | Rename a flow — what an arrow carries, on every level |
-| `add_activity(parent, name, x?, y?, width?, height?)` | Add a box to a decomposition; it takes the next number, copies its neighbours' look, and without a position is placed down the IDEF0 diagonal clear of boxes, arrows and labels |
-| `add_arrow(sheet, source, target, name? / flow?)` | Draw an arrow: box output → box input, control or mechanism; frame → box; box → frame; a branch forking off an arrow already on the sheet (`source={"arrow": segment}`), or one joining it (`target={"arrow": segment}`), cut into it the way Ramus cuts a fork or a join. The route is orthogonal and kept clear of boxes and other arrows; where each end sits on its side is chosen by trying several and keeping the cleanest route. An end on the frame, or on a decomposed box, is joined to the same flow on the other level when that arrow is there — keeping the levels balanced — and is otherwise left a tunnel. An end on a box with no decomposition yet gets the arrow-to-be of one, as Ramus does, so it comes down when the box is decomposed |
-| `move_activity(activity, x?, y?, width?, height?)` | Move or resize a box; its arrows are routed again, an arrow it lands on is routed round it, and a name it covers is moved off |
+| `add_activity(parent, name, x?, y?, width?, height?)` | Add a box to a decomposition: it takes the next number, copies its neighbours' look and, without a position, goes down the IDEF0 diagonal clear of boxes, arrows and names |
+| `add_arrow(sheet, source, target, name? / flow?)` | Draw an arrow: box output → box input, control or mechanism; frame → box; box → frame; a branch off an arrow already there (`source={"arrow": segment}`) or a join into one (`target={"arrow": segment}`), cut in the way Ramus cuts them. The route is orthogonal, clear of boxes, and keeps off the other arrows — down the middle of the gap between them; where each end sits on its side is chosen by trying several. An end on the frame or on a decomposed box is joined to the same flow on the other level when that arrow is there — keeping the levels balanced — and is otherwise left a tunnel |
+| `move_activity(activity, x?, y?, width?, height?)` | Move or resize a box; its arrows are routed again, an arrow it lands on goes round it, a name it covers moves off |
 | `delete_activity(activity, with_decomposition?)` | Delete a box with the arrows that ended on it (and, if asked, everything under it); the boxes after it move up a number |
 | `delete_arrow(segment)` | Delete an arrow segment; as in Ramus, a piece left leading nowhere goes with it |
-| `join_levels(first, second)` | Tie an arrow on a box to the same arrow on the frame of that box's decomposition when both are drawn but not joined (each a tunnel) |
-| `tidy_sheet(sheet)` | Lay a sheet's arrows out again: each is rerouted and the new route kept only if clearly better, crossing pairs are tried the other way round, then names in the way are moved; boxes stay put |
-| `tidy_labels(sheet)` | Move only the arrow names that are in the way back beside their arrows |
+| `join_levels(first, second)` | Tie an arrow on a box to the same arrow on the frame of that box's decomposition when both are drawn but not joined |
+| `tidy_sheet(sheet)` / `tidy_labels(sheet)` | Lay a sheet's arrows out again — a new route is kept only if clearly better, crossing pairs are tried the other way round — then move the names in the way; or only the names |
 | `save_model(path?, overwrite?)` | Write the changes: to a new file (the original stays untouched), or over the opened one after copying it once to `<name>.backup.rsf` |
 
-Nothing is written until `save_model`, and `open_model` will not switch away from unsaved changes
-unless told to drop them. Arrows can be drawn, rerouted and deleted in files saved by Ramus 3.x; a
-Ramus 2.x file keeps its routes in a binary form this does not write yet — open and save it once
-in Ramus 3.
+## Limits
 
-From the command line: `.venv\Scripts\python src\render_svg.py model.rsf out.svg [A1]`.
+- Arrows are drawn, rerouted and deleted in files saved by Ramus 3.x. A Ramus 2.x file keeps its
+  routes in a binary form this does not write yet: open and save it once in Ramus 3.
+- DFD shapes are drawn as IDEF0 boxes, and a sheet is one page.
+- A tunnel drawn in square brackets cannot be told from a forgotten arrow; `check_model` reports
+  it as a warning that is right only if the tunnel was meant.
 
-## Tests
+## Development
 
 ```bash
 .venv\Scripts\python -m unittest discover -s tests
 ```
 
-Most tests build a small model on the fly. The ones that read Ramus's own sample models skip
+Most tests build a small model on the fly; the ones that read Ramus's sample models skip
 themselves when Ramus is not installed (`RAMUS_SAMPLES` points them at another copy of its `doc`
-folder).
-
-## Status
-
-Eyes work: reading models and rendering diagrams with their arrows. Hands work for renaming, for
-adding, moving and deleting boxes, for drawing, forking and deleting arrows and for tidying a
-sheet's layout; every change is written the
-way Ramus writes it — a rewritten table is byte-for-byte what Ramus itself would produce — and was
-checked by opening the result in the Ramus engine. The model can be checked against the rules of
-IDEF0, and the findings mended with the hands.
+folder). `tools/ramus_validate.py` opens a file in a Ramus engine to check what was written, and
+`tools/build_mcpb.py` builds the Claude Desktop extension. From the command line:
+`.venv\Scripts\python src\render_svg.py model.rsf out.svg [A1]`.
 
 ## License
 

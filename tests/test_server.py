@@ -278,6 +278,29 @@ class Editing(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "already exists"):
             server.create_model(path, "Другое", discard_unsaved=True)
 
+    def test_models_are_found_and_named_relative_to_the_models_folder(self):
+        folder = os.path.join(self._dir.name, "models")
+        os.makedirs(os.path.join(folder, "курс", "лаба"))
+        fx.tiny_model(os.path.join(folder, "курс", "лаба", "первая.rsf"))
+        fx.tiny_model(os.path.join(folder, "курс", "лаба", "первая.backup.rsf"))
+        old = os.environ.get("RAMUS_MODELS_DIR")
+        os.environ["RAMUS_MODELS_DIR"] = folder
+        try:
+            found = server.list_models()
+            self.assertEqual(found["folder"], os.path.abspath(folder))
+            self.assertEqual([m["name"] for m in found["models"]], ["первая"])
+            self.assertEqual(server.list_models(recursive=False)["models"], [])
+            server.save_model()
+            server.open_model(os.path.join("курс", "лаба", "первая"))  # no .rsf needed
+            self.assertTrue(server.current_model()["path"].endswith("первая.rsf"))
+            made = server.create_model("вторая", "Сделать дело")
+            self.assertEqual(made["created"], os.path.join(os.path.abspath(folder), "вторая.rsf"))
+        finally:
+            if old is None:
+                del os.environ["RAMUS_MODELS_DIR"]
+            else:
+                os.environ["RAMUS_MODELS_DIR"] = old
+
     def test_check_one_sheet_and_an_unknown_one(self):
         report = server.check_model("A1")
         self.assertEqual(report["checked"], "A1")
@@ -308,7 +331,8 @@ class OverStdio(unittest.TestCase):
                 )
                 async with stdio_client(params) as (read, write):
                     async with ClientSession(read, write) as session:
-                        await session.initialize()
+                        hello = await session.initialize()
+                        self.assertIn("list_models", hello.instructions)
                         tools = await session.list_tools()
                         opened = await session.call_tool("open_model", {"path": path})
                         diagram = await session.call_tool("get_diagram", {"node": "A0"})
@@ -326,8 +350,13 @@ class OverStdio(unittest.TestCase):
              "get_diagram", "render_diagram", "render_diagram_svg_text",
              "rename_activity", "rename_flow", "add_activity", "add_arrow", "move_activity",
              "delete_activity", "delete_arrow", "tidy_sheet", "tidy_labels", "save_model",
-             "check_model", "join_levels", "create_model"},
+             "check_model", "join_levels", "create_model", "list_models"},
         )
+        by_name = {t.name: t for t in tools.tools}
+        self.assertTrue(by_name["render_diagram"].annotations.readOnlyHint)
+        self.assertFalse(by_name["add_arrow"].annotations.destructiveHint)
+        self.assertTrue(by_name["save_model"].annotations.destructiveHint)
+        self.assertTrue(all(t.title for t in tools.tools))
         self.assertFalse(opened.isError)
         data = json.loads(diagram.content[0].text)
         self.assertEqual([a["number"] for a in data["activities"]], ["A1", "A2"])

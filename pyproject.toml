@@ -1,0 +1,15 @@
+[project]
+name = "ramus-mcp"
+version = "1.0.0"
+description = "Eyes and hands for Ramus IDEF0 models (.rsf): read, see, check, edit and create them from an AI agent over MCP."
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "byMERCY" }]
+requires-python = ">=3.12"
+dependencies = [
+    "mcp>=1.2,<2",      # MCP server SDK, v1 FastMCP API (2.x renamed FastMCP)
+    "pillow>=10.0.0",   # draws a diagram as a PNG, so the agent can see it
+]
+
+[tool.uv]
+package = false  # a server run from its source folder (uv run src/server.py), not a library

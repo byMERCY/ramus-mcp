@@ -8,12 +8,14 @@ arrows - laid out and routed the IDEF0 way - and save a .rsf that Ramus reopens.
 Every reading tool shows the model as it stands, unsaved changes included, so a change can be
 looked at before it is written. Nothing is written until save_model.
 
-Run it over stdio:  python src/server.py
+Run it over stdio:  python src/server.py   (or: uv run src/server.py)
 Point an MCP client at that command. It keeps one model open at a time; open_model switches.
+RAMUS_MODELS_DIR, if set, is the folder list_models looks in and relative paths start from.
 """
 
 from __future__ import annotations
 
+import datetime as _dt
 import os
 import sys
 from typing import Any, Dict, List, Optional
@@ -22,6 +24,7 @@ from typing import Any, Dict, List, Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mcp.server.fastmcp import FastMCP, Image  # noqa: E402
+from mcp.types import ToolAnnotations  # noqa: E402
 
 import idef0_rules as rules  # noqa: E402
 from model_editor import EditError, ModelEditor  # noqa: E402
@@ -29,8 +32,41 @@ from ramus_rsf import Activity, Arrow, Diagram, End, RsfModel  # noqa: E402
 from render_png import render_diagram_png  # noqa: E402
 from render_svg import render_diagram as render_diagram_svg  # noqa: E402
 
+INSTRUCTIONS = """\
+Ramus business-process models (.rsf files, IDEF0): read them, see them, check them against the \
+rules of IDEF0, change them, or build one from nothing. One model is open at a time.
 
-mcp = FastMCP("ramus")
+Start: list_models finds the .rsf files (in the models folder, or a folder you name); \
+open_model opens one; create_model starts a new one.
+
+Look before and after a change: render_diagram shows a sheet as a picture; get_diagram gives \
+its boxes and arrows as data, with the ids the editing tools take; get_function_tree the whole \
+hierarchy. A sheet is named by the activity it decomposes: "A-0" is the context diagram, "A0" \
+its decomposition, then "A1", "A12" and so on.
+
+Build the IDEF0 way: the context diagram holds one box, A0, with its inputs (left), controls \
+(top), mechanisms (bottom) and outputs (right); decompose it into 3 to 6 boxes (add_activity), \
+connect them (add_arrow: an output into another box's input, control or mechanism), and go a \
+level down where there is more to say. Name activities by verbs ("Проверить заявку") and arrows \
+by nouns ("заявка"), in the user's language. An arrow on a decomposed box continues on the \
+frame of its sheet: draw it there from (or to) the frame and the two are joined.
+
+Every edit answers with "idef0": the rule findings it brought in and how many it settled; \
+check_model lists them all, each with the call that mends it. tidy_sheet straightens a tangled \
+sheet. Nothing is written until save_model (create_model writes its new file at once); saving \
+over the opened file first copies it to <name>.backup.rsf. Ask the user to close the model in \
+Ramus before writing over it.
+"""
+
+mcp = FastMCP("ramus", instructions=INSTRUCTIONS)
+
+# How each tool touches things, for clients that ask before acting: looking changes nothing;
+# editing changes the open model in memory only; removing takes something out of it; writing
+# puts a file on disk.
+_LOOK = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
+_EDIT = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
+_REMOVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False)
+_WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False)
 
 
 class _Open:
@@ -92,6 +128,26 @@ def _end_ref(spec: Any) -> Dict[str, Any]:
 
 def _finding_key(f: rules.Finding):
     return (f.rule, f.sheet, f.activity, f.flow, f.segment)
+
+
+def _models_dir() -> Optional[str]:
+    """The folder the user keeps models in, if one was set up (RAMUS_MODELS_DIR)."""
+    folder = os.environ.get("RAMUS_MODELS_DIR", "").strip()
+    if not folder or "${" in folder:  # unset, or a placeholder the client left unexpanded
+        return None
+    return os.path.abspath(os.path.expanduser(os.path.expandvars(folder)))
+
+
+def _model_path(path: str, must_exist: bool) -> str:
+    """A model path as the user may give it: relative to the models folder, ~ for home, and
+    with or without the .rsf."""
+    p = os.path.expanduser(os.path.expandvars(str(path).strip().strip('"')))
+    if not os.path.isabs(p) and _models_dir():
+        p = os.path.join(_models_dir(), p)
+    p = os.path.abspath(p)
+    if not p.lower().endswith(".rsf") and (not must_exist or not os.path.exists(p)):
+        p += ".rsf"
+    return p
 
 
 def _edited(result: Dict[str, Any]) -> Dict[str, Any]:
@@ -217,7 +273,7 @@ def _arrow_row(a: Arrow) -> Dict[str, Any]:
     return row
 
 
-@mcp.tool()
+@mcp.tool(title="Open a model", annotations=_LOOK)
 def open_model(path: str, discard_unsaved: bool = False) -> Dict[str, Any]:
     """Open a Ramus .rsf model file and make it the one every other tool reads and edits.
 
@@ -226,8 +282,9 @@ def open_model(path: str, discard_unsaved: bool = False) -> Dict[str, Any]:
     you know what there is to look at. If the model open now has unsaved changes this refuses,
     so nothing is lost or written behind your back: save_model first, or pass discard_unsaved.
     """
+    path = _model_path(path, must_exist=True)
     if not os.path.isfile(path):
-        raise ValueError(f"{path} is not a file.")
+        raise ValueError(f"{path} is not a file. list_models shows the models there are.")
     if _Open.editor is not None and _Open.editor.changed and not discard_unsaved:
         raise ValueError(f"{_Open.path} has unsaved changes. Call save_model to keep them, "
                          f"or open_model again with discard_unsaved=true to drop them.")
@@ -246,7 +303,7 @@ def open_model(path: str, discard_unsaved: bool = False) -> Dict[str, Any]:
     }
 
 
-@mcp.tool()
+@mcp.tool(title="Create a new model", annotations=_WRITE)
 def create_model(path: str, activity: str, author: str = "", project: Optional[str] = None,
                  model_name: str = "Работы", overwrite: bool = False,
                  discard_unsaved: bool = False) -> Dict[str, Any]:
@@ -266,7 +323,8 @@ def create_model(path: str, activity: str, author: str = "", project: Optional[s
         raise ValueError(f"{_Open.path} has unsaved changes. Call save_model to keep them, "
                          f"or create_model again with discard_unsaved=true to drop them.")
     try:
-        editor = ModelEditor.create(path, activity, model_name, author, project, overwrite)
+        editor = ModelEditor.create(_model_path(path, must_exist=False), activity, model_name,
+                                    author, project, overwrite)
     except FileExistsError as exc:
         raise ValueError(str(exc)) from None
     _Open.editor = editor
@@ -279,7 +337,51 @@ def create_model(path: str, activity: str, author: str = "", project: Optional[s
                     "decompose it."}
 
 
-@mcp.tool()
+_SKIP_DIRS = {"node_modules", "__pycache__", "AppData", "site-packages"}
+
+
+@mcp.tool(title="Find model files", annotations=_LOOK)
+def list_models(folder: Optional[str] = None, recursive: bool = True) -> Dict[str, Any]:
+    """Find Ramus model files (.rsf): in ``folder``, or else in the models folder set up for
+    this connector (else the user's Documents), and the folders below it when ``recursive``.
+    Newest first, with size and date; backups (<name>.backup.rsf) are left out. Give a path from
+    here to open_model."""
+    if folder:
+        base = os.path.abspath(os.path.expanduser(os.path.expandvars(folder.strip().strip('"'))))
+    else:
+        base = _models_dir() or os.path.join(os.path.expanduser("~"), "Documents")
+    if not os.path.isdir(base):
+        raise ValueError(f"{base} is not a folder.")
+    found = []
+    for root, dirs, files in os.walk(base):
+        depth = os.path.relpath(root, base).count(os.sep) + (root != base)
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in _SKIP_DIRS] \
+            if recursive and depth < 3 else []
+        for f in files:
+            if f.lower().endswith(".rsf") and ".backup" not in f.lower():
+                p = os.path.join(root, f)
+                try:
+                    st = os.stat(p)
+                except OSError:
+                    continue
+                found.append((st.st_mtime, p, st.st_size))
+    found.sort(reverse=True)
+    shown = found[:200]
+    result: Dict[str, Any] = {
+        "folder": base,
+        "models": [{"path": p, "name": os.path.splitext(os.path.basename(p))[0],
+                    "size_kb": round(size / 1024, 1),
+                    "modified": _dt.datetime.fromtimestamp(m).strftime("%Y-%m-%d %H:%M")}
+                   for m, p, size in shown],
+    }
+    if len(found) > len(shown):
+        result["more"] = len(found) - len(shown)
+    if not found:
+        result["note"] = "No .rsf files here. create_model starts a new one."
+    return result
+
+
+@mcp.tool(title="Which model is open", annotations=_LOOK)
 def current_model() -> Dict[str, Any]:
     """Say which model is open, if any."""
     if _Open.model is None:
@@ -288,7 +390,7 @@ def current_model() -> Dict[str, Any]:
             "unsaved_changes": bool(_Open.editor and _Open.editor.changed)}
 
 
-@mcp.tool()
+@mcp.tool(title="List the diagrams", annotations=_LOOK)
 def list_diagrams() -> List[Dict[str, Any]]:
     """List the model's diagrams (decomposition sheets), largest first.
 
@@ -308,7 +410,7 @@ def list_diagrams() -> List[Dict[str, Any]]:
     ]
 
 
-@mcp.tool()
+@mcp.tool(title="Activity tree", annotations=_LOOK)
 def get_function_tree() -> List[Dict[str, Any]]:
     """The whole activity tree: every box in the model, nested by decomposition.
 
@@ -332,7 +434,7 @@ def get_function_tree() -> List[Dict[str, Any]]:
     return tree
 
 
-@mcp.tool()
+@mcp.tool(title="Read a diagram", annotations=_LOOK)
 def get_diagram(index: int = 0, node: str = "", include_routes: bool = False) -> Dict[str, Any]:
     """Read one diagram as data: its boxes, the flows between them, and the free text on it.
 
@@ -361,7 +463,7 @@ def get_diagram(index: int = 0, node: str = "", include_routes: bool = False) ->
     return out
 
 
-@mcp.tool()
+@mcp.tool(title="Look at a diagram", annotations=_LOOK)
 def render_diagram(index: int = 0, node: str = "") -> Image:
     """Draw one diagram and return it as a PNG image, laid out as the model stores it.
 
@@ -373,7 +475,7 @@ def render_diagram(index: int = 0, node: str = "") -> Image:
     return Image(data=render_diagram_png(d), format="png")
 
 
-@mcp.tool()
+@mcp.tool(title="Diagram as SVG", annotations=_LOOK)
 def render_diagram_svg_text(index: int = 0, node: str = "") -> str:
     """The same diagram as an SVG document (text), for saving or embedding in a page."""
     d = _diagram(index, node)
@@ -383,7 +485,7 @@ def render_diagram_svg_text(index: int = 0, node: str = "") -> str:
 # ------------------------------------------------------------------------------- the rules
 
 
-@mcp.tool()
+@mcp.tool(title="Check against IDEF0", annotations=_LOOK)
 def check_model(sheet: Optional[str] = None) -> Dict[str, Any]:
     """Check the model against the rules of IDEF0 - the whole model, or one sheet (``sheet``:
     the number of the activity it decomposes, "A-0" for the context diagram).
@@ -420,14 +522,14 @@ def check_model(sheet: Optional[str] = None) -> Dict[str, Any]:
 # written until save_model. Activities and sheets may be named by IDEF0 number ("A12") or id.
 
 
-@mcp.tool()
+@mcp.tool(title="Rename an activity", annotations=_EDIT)
 def rename_activity(activity: str, name: str) -> Dict[str, Any]:
     """Give an activity box a new name. ``activity`` is its number ("A12") or id. IDEF0 names
     an activity with a verb phrase: "Проверить заявку", not "Проверка"."""
     return _edited(_Open.editor.rename_activity(_activity_id(activity), name))
 
 
-@mcp.tool()
+@mcp.tool(title="Rename a flow", annotations=_EDIT)
 def rename_flow(flow: int, name: str) -> Dict[str, Any]:
     """Give a flow - what an arrow carries, shared by all its segments and levels - a new name.
     ``flow`` is the stream id get_diagram reports. IDEF0 names a flow with a noun phrase."""
@@ -435,7 +537,7 @@ def rename_flow(flow: int, name: str) -> Dict[str, Any]:
     return _edited(_Open.editor.rename_flow(int(flow), name))
 
 
-@mcp.tool()
+@mcp.tool(title="Add an activity", annotations=_EDIT)
 def add_activity(parent: str, name: str, x: Optional[float] = None, y: Optional[float] = None,
                  width: Optional[float] = None, height: Optional[float] = None) -> Dict[str, Any]:
     """Add an activity box to the decomposition of ``parent`` (its number, "A0", or id).
@@ -455,7 +557,7 @@ def add_activity(parent: str, name: str, x: Optional[float] = None, y: Optional[
     return _edited(result)
 
 
-@mcp.tool()
+@mcp.tool(title="Draw an arrow", annotations=_EDIT)
 def add_arrow(sheet: str, source: Dict[str, Any], target: Dict[str, Any],
               name: Optional[str] = None, flow: Optional[int] = None) -> Dict[str, Any]:
     """Draw an arrow on a sheet - ``sheet`` is the number of the activity it decomposes ("A0",
@@ -482,7 +584,7 @@ def add_arrow(sheet: str, source: Dict[str, Any], target: Dict[str, Any],
                                           name, None if flow is None else int(flow)))
 
 
-@mcp.tool()
+@mcp.tool(title="Move or resize an activity", annotations=_EDIT)
 def move_activity(activity: str, x: Optional[float] = None, y: Optional[float] = None,
                   width: Optional[float] = None, height: Optional[float] = None) -> Dict[str, Any]:
     """Move an activity box on its sheet, resize it, or both - ``activity`` is its number
@@ -498,7 +600,7 @@ def move_activity(activity: str, x: Optional[float] = None, y: Optional[float] =
     return _edited(_Open.editor.move_activity(_activity_id(activity), x, y, width, height))
 
 
-@mcp.tool()
+@mcp.tool(title="Delete an activity", annotations=_REMOVE)
 def delete_activity(activity: str, with_decomposition: bool = False) -> Dict[str, Any]:
     """Delete an activity box - ``activity`` is its number ("A12") or id - with every arrow
     that ended on it; a piece of arrow left leading nowhere goes too. The boxes after it move
@@ -510,7 +612,7 @@ def delete_activity(activity: str, with_decomposition: bool = False) -> Dict[str
     return _edited(_Open.editor.delete_activity(_activity_id(activity), with_decomposition))
 
 
-@mcp.tool()
+@mcp.tool(title="Delete an arrow segment", annotations=_REMOVE)
 def delete_arrow(segment: int) -> Dict[str, Any]:
     """Delete one arrow segment - its id is in get_diagram's ``segments`` for each flow (or
     ``id`` with include_routes). As in Ramus, a piece left leading nowhere goes with it: the
@@ -521,7 +623,7 @@ def delete_arrow(segment: int) -> Dict[str, Any]:
     return _edited(_Open.editor.delete_arrow(int(segment)))
 
 
-@mcp.tool()
+@mcp.tool(title="Join an arrow across levels", annotations=_EDIT)
 def join_levels(first: int, second: int) -> Dict[str, Any]:
     """Join an arrow on a box to the same arrow on the frame of that box's decomposition, when
     both are drawn but are not tied together - each shows as a tunnel and the levels do not
@@ -531,7 +633,7 @@ def join_levels(first: int, second: int) -> Dict[str, Any]:
     return _edited(_Open.editor.join_levels(int(first), int(second)))
 
 
-@mcp.tool()
+@mcp.tool(title="Tidy a sheet", annotations=_EDIT)
 def tidy_sheet(sheet: str) -> Dict[str, Any]:
     """Lay out a sheet's arrows again - ``sheet`` is the number of the activity it decomposes
     ("A0"; "A-0" for the context diagram) or its id. Each arrow is rerouted with the others
@@ -545,7 +647,7 @@ def tidy_sheet(sheet: str) -> Dict[str, Any]:
     return _edited(_Open.editor.tidy_sheet(_sheet_id(sheet)))
 
 
-@mcp.tool()
+@mcp.tool(title="Tidy arrow names", annotations=_EDIT)
 def tidy_labels(sheet: str) -> Dict[str, Any]:
     """Move only the arrow names on a sheet that are in the way - on a box, a line or another
     name, off the sheet, or lost far from their arrow - back beside their arrows. Routes and
@@ -554,7 +656,7 @@ def tidy_labels(sheet: str) -> Dict[str, Any]:
     return _edited(_Open.editor.tidy_labels(_sheet_id(sheet)))
 
 
-@mcp.tool()
+@mcp.tool(title="Save the model", annotations=_WRITE)
 def save_model(path: Optional[str] = None, overwrite: bool = False) -> Dict[str, Any]:
     """Write the model with every change made so far.
 
@@ -577,5 +679,9 @@ def save_model(path: Optional[str] = None, overwrite: bool = False) -> Dict[str,
     return result
 
 
-if __name__ == "__main__":
+def main() -> None:
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()
