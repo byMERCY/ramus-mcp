@@ -155,6 +155,38 @@ def _in_ramus(path: str, folder: str) -> None:
     rv.save_image(picture, os.path.join(folder, "in-ramus.png"))
 
 
+def social_preview() -> None:
+    """docs/images/social.png, 1280 x 640: the card a link to the repository shows (uploaded by
+    hand in the repository's settings). The icon, the name and a line on the left; the demo's
+    decomposition on the right."""
+    out = os.path.join(ROOT, "docs", "images", "social.png")
+    card = Image.new("RGB", (1280, 640), (31, 78, 121))
+    d = ImageDraw.Draw(card)
+    icon = Image.open(os.path.join(ROOT, "icon.png")).convert("RGBA").resize((150, 150))
+    card.paste(icon, (70, 120), icon)
+
+    def font(size):
+        for name in ("segoeuib.ttf", "arialbd.ttf", "DejaVuSans-Bold.ttf"):
+            try:
+                return ImageFont.truetype(name, size)
+            except OSError:
+                continue
+        return ImageFont.load_default()
+
+    d.text((70, 310), "ramus-mcp", fill=(255, 255, 255), font=font(68))
+    d.text((72, 400), "Claude's eyes and hands", fill=(255, 196, 61), font=font(34))
+    d.text((72, 445), "for Ramus IDEF0 models", fill=(255, 196, 61), font=font(34))
+    d.text((72, 520), "read · see · check · edit · create", fill=(210, 225, 240), font=font(26))
+    sheet = Image.open(os.path.join(ROOT, "docs", "images", "en", "decomposition.png"))
+    sheet = sheet.convert("RGB").resize((700, round(sheet.height * 700 / sheet.width)),
+                                        Image.LANCZOS)
+    x, y = 530, (640 - sheet.height) // 2
+    d.rounded_rectangle((x - 12, y - 12, x + sheet.width + 12, y + sheet.height + 12), 16,
+                        fill=(255, 255, 255))
+    card.paste(sheet, (x, y))
+    card.save(out, optimize=True)
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         for lang in DEMOS:
@@ -176,6 +208,7 @@ def main() -> None:
             sizes = {f: os.path.getsize(os.path.join(folder, f)) // 1024
                      for f in sorted(os.listdir(folder))}
             print("wrote", folder, sizes)
+    social_preview()
 
 
 if __name__ == "__main__":
