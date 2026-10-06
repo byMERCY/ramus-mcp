@@ -210,5 +210,105 @@ class Renaming(unittest.TestCase):
         self.assertEqual(editor.snapshot().activities()[target].name, "Новое имя")
 
 
+def _rect(a):
+    return (a.x, a.y, a.width, a.height)
+
+
+def _touches(a, b, gap=0.0):
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    return not (ax + aw + gap <= bx or bx + bw + gap <= ax or ay + ah + gap <= by or by + bh + gap <= ay)
+
+
+class Adding(unittest.TestCase):
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self._dir.name, "tiny.rsf")
+        fx.tiny_model(self.path)
+        self.editor = ModelEditor(self.path)
+
+    def tearDown(self):
+        self._dir.cleanup()
+
+    def _sheet(self, model, parent_id):
+        return next(d for d in model.diagrams() if d.parent_id == parent_id)
+
+    def test_a_new_box_goes_last_on_its_sheet_and_takes_the_next_number(self):
+        result = self.editor.add_activity(fx.TOP, "Проверить")
+        self.assertEqual(result["number"], "A3")
+        out = os.path.join(self._dir.name, "out.rsf")
+        self.editor.save(out)
+        sheet = self._sheet(RsfModel(out), fx.TOP)
+        self.assertEqual([a.number for a in sheet.activities], ["A1", "A2", "A3"])
+        self.assertEqual(sheet.activities[-1].name, "Проверить")
+        self.assertEqual(sheet.activities[-1].element_id, result["id"])
+
+    def test_a_new_box_is_written_with_ramus_bookkeeping(self):
+        new = self.editor.add_activity(fx.TOP, "Проверить")["id"]
+        doc = self.editor.doc
+        element = doc.table("elements").where(ELEMENT_ID=new)[0]
+        self.assertEqual(element["QUALIFIER_ID"], str(fx.Q_MODEL))
+        self.assertEqual(element["REMOVED_BRANCH_ID"], str(NO_REMOVAL))
+        place = doc.table("Core/attribute_hierarchicals").where(ELEMENT_ID=new)[0]
+        self.assertEqual(place["PARENT_ELEMENT_ID"], str(fx.TOP))
+        self.assertEqual(place["PREVIOUS_ELEMENT_ID"], str(fx.C2))  # after the last box
+
+    def test_a_new_box_takes_its_look_from_the_box_before_it(self):
+        new = self.editor.add_activity(fx.C1, "Ещё")["id"]  # the box before it is G1
+        acts = self.editor.snapshot().activities()
+        self.assertEqual(acts[new].type, acts[fx.G1].type)
+        self.assertEqual(acts[new].font_size, acts[fx.G1].font_size)
+
+    def test_without_a_position_the_box_lands_clear_of_boxes_arrows_and_labels(self):
+        new = self.editor.add_activity(fx.TOP, "Проверить")["id"]
+        sheet = self._sheet(self.editor.snapshot(), fx.TOP)
+        box = next(_rect(a) for a in sheet.activities if a.element_id == new)
+        left, top, right, bottom = sheet.frame
+        self.assertTrue(left <= box[0] and top <= box[1]
+                        and box[0] + box[2] <= right and box[1] + box[3] <= bottom)
+        for a in sheet.activities:
+            if a.element_id != new:
+                self.assertFalse(_touches(box, _rect(a)), a.name)
+        for arrow in sheet.arrows:
+            for p, q in zip(arrow.points, arrow.points[1:]):
+                seg = (min(p[0], q[0]), min(p[1], q[1]), abs(p[0] - q[0]), abs(p[1] - q[1]))
+                self.assertFalse(_touches(box, seg), f"crosses arrow {arrow.sector_id}")
+            if arrow.label is not None:
+                lb = arrow.label
+                self.assertFalse(_touches(box, (lb.x, lb.y, lb.width, lb.height)))
+
+    def test_a_given_position_is_used_and_must_be_on_the_sheet(self):
+        result = self.editor.add_activity(fx.TOP, "Здесь", x=600, y=330, width=100, height=50)
+        self.assertEqual((result["x"], result["y"]), (600.0, 330.0))
+        with self.assertRaises(EditError):
+            self.editor.add_activity(fx.TOP, "Мимо", x=780, y=400, width=100, height=50)
+
+    def test_the_first_box_under_an_activity_gives_it_a_decomposition(self):
+        result = self.editor.add_activity(fx.C2, "Первая работа")
+        self.assertEqual(result["number"], "A21")
+        model = self.editor.snapshot()
+        sheet = self._sheet(model, fx.C2)
+        self.assertEqual(sheet.node, "A2")
+        self.assertEqual([a.name for a in sheet.activities], ["Первая работа"])
+        data = self.editor.doc.table("IDEF0/attribute_visual_datas").where(ELEMENT_ID=fx.C2)
+        self.assertTrue(data and data[0].get("DATA"))  # an empty version-2 diagram, not nothing
+
+    def test_the_context_diagram_keeps_its_single_box(self):
+        with self.assertRaises(EditError):
+            self.editor.add_activity(fx.BASE, "Вторая вершина")
+
+    @unittest.skipUnless(_paths.MODEL_EXAMPLE, "Ramus samples not installed")
+    def test_adding_to_a_ramus2_model_keeps_its_conventions(self):
+        editor = ModelEditor(_paths.MODEL_EXAMPLE)
+        a0 = next(a for a in editor.snapshot().activities().values() if a.number == "A0")
+        result = editor.add_activity(a0.element_id, "Контролировать качество")
+        self.assertEqual(result["number"], "A4")
+        element = editor.doc.table("elements").where(ELEMENT_ID=result["id"])[0]
+        self.assertEqual(element["ELEMENT_NAME"], "Контролировать качество")  # Ramus 2 keeps a copy
+        data = editor.doc.table("IDEF0/attribute_visual_datas").where(ELEMENT_ID=result["id"])[0]
+        self.assertTrue(data["DATA"])  # Ramus 2 stores an empty diagram for a leaf
+
+
 if __name__ == "__main__":
     unittest.main()

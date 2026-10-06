@@ -312,13 +312,19 @@ class RsfDocument:
                 return int(r["QUALIFIER_ID"])
         return None
 
-    def add_row(self, table: str, values: Dict[str, Any]) -> Row:
+    def add_row(self, table: str, values: Dict[str, Any], lenient: bool = False) -> Row:
         """Add a row, filling in the branch bookkeeping a Ramus 3 file expects: a new element
         is created on the current branch and never removed, a new value belongs to the current
-        branch. Files without those columns (Ramus 2) are left alone."""
+        branch. Files without those columns (Ramus 2) are left alone.
+
+        ``lenient`` drops values for columns this file's table does not have - for columns
+        that one Ramus version writes and another does not (an icon id, say). Without it an
+        unknown column is an error."""
         t = self.table(table)
         branch = self.current_branch()
         values = dict(values)
+        if lenient:
+            values = {k: v for k, v in values.items() if t.has(k)}
         if t.has("CREATED_BRANCH_ID"):
             values.setdefault("CREATED_BRANCH_ID", branch)
         if t.has("REMOVED_BRANCH_ID"):
