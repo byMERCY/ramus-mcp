@@ -1,8 +1,11 @@
 """ramus-mcp — an MCP server that gives an agent eyes and hands for Ramus .rsf models.
 
-Eyes are here: open a model, list its diagrams, read the activity tree and each diagram's arrows
-as data, and render a diagram to PNG so the agent can look at it. Hands (creating and editing,
-then writing a .rsf that Ramus reopens) come next.
+Eyes: open a model, list its diagrams, read the activity tree and each diagram's arrows as data,
+and render a diagram to PNG so the agent can look at it. Hands: rename activities and flows, add
+boxes and arrows - laid out and routed the IDEF0 way - and save a .rsf that Ramus reopens.
+
+Every reading tool shows the model as it stands, unsaved changes included, so a change can be
+looked at before it is written. Nothing is written until save_model.
 
 Run it over stdio:  python src/server.py
 Point an MCP client at that command. It keeps one model open at a time; open_model switches.
@@ -19,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mcp.server.fastmcp import FastMCP, Image  # noqa: E402
 
+from model_editor import EditError, ModelEditor  # noqa: E402
 from ramus_rsf import Activity, Arrow, Diagram, End, RsfModel  # noqa: E402
 from render_png import render_diagram_png  # noqa: E402
 from render_svg import render_diagram as render_diagram_svg  # noqa: E402
@@ -28,12 +32,64 @@ mcp = FastMCP("ramus")
 
 
 class _Open:
-    """The one model the server is working on, reloaded whenever the file is opened."""
+    """The one model the server is working on: the editor holding the file, and the reader's
+    view of it as it now stands."""
 
     path: Optional[str] = None
+    editor: Optional[ModelEditor] = None
     model: Optional[RsfModel] = None
     diagrams: List[Diagram] = []
     activities: Dict[int, Activity] = {}
+
+
+def _refresh() -> None:
+    """Re-read the model from the editor, so every tool sees the latest change."""
+    if _Open.model is not None:
+        _Open.model.close()
+    _Open.model = _Open.editor.snapshot()
+    _Open.diagrams = _Open.model.diagrams()
+    _Open.activities = _Open.model.activities()
+
+
+def _activity_id(ref: Any) -> int:
+    """An activity by id, or by its IDEF0 number ("A12")."""
+    _require()
+    if isinstance(ref, int):
+        return ref
+    text = str(ref).strip()
+    if text.lstrip("-").isdigit():
+        return int(text)
+    for a in _Open.activities.values():
+        if a.number.lower() == text.lower():
+            return a.element_id
+    raise ValueError(f"No activity numbered {text!r}. get_function_tree lists them.")
+
+
+def _sheet_id(ref: Any) -> int:
+    """A sheet by the number of the activity it decomposes ("A0", "A12"), "A-0" for the
+    context diagram, or an activity id."""
+    _require()
+    if str(ref).strip().upper() == "A-0":
+        for d in _Open.diagrams:
+            if d.node == "A-0":
+                return d.parent_id
+    return _activity_id(ref)
+
+
+def _end_ref(spec: Any) -> Dict[str, Any]:
+    if not isinstance(spec, dict):
+        raise ValueError('An arrow end is an object: {"activity": "A1", "role": "input"} or '
+                         '{"frame": "input"}.')
+    out = dict(spec)
+    if "activity" in out:
+        out["activity"] = _activity_id(out["activity"])
+    return out
+
+
+def _edited(result: Dict[str, Any]) -> Dict[str, Any]:
+    _refresh()
+    result["unsaved_changes"] = True
+    return result
 
 
 def _require() -> None:
@@ -107,9 +163,11 @@ def _flow_rows(d: Diagram) -> List[Dict[str, Any]]:
         for a in arrows:
             if a.name and a.name not in names:
                 names.append(a.name)
+        streams = sorted({a.stream_id for a in arrows if a.stream_id is not None})
         rows.append(
             {
                 "flow": flow,
+                "stream": streams[0] if len(streams) == 1 else streams,
                 "name": " | ".join(names),
                 "from": [_end_row(a.start) for a in arrows if a.start.kind != "junction"],
                 "to": [_end_row(a.end) for a in arrows if a.end.kind != "junction"],
@@ -136,25 +194,28 @@ def _arrow_row(a: Arrow) -> Dict[str, Any]:
         }
     if a.color:
         row["color"] = a.color
+    if a.stream_id is not None:
+        row["stream"] = a.stream_id
     return row
 
 
 @mcp.tool()
-def open_model(path: str) -> Dict[str, Any]:
-    """Open a Ramus .rsf model file and make it the one every other tool reads.
+def open_model(path: str, discard_unsaved: bool = False) -> Dict[str, Any]:
+    """Open a Ramus .rsf model file and make it the one every other tool reads and edits.
 
     Returns a short summary: how many diagrams (decomposition sheets) it has, their IDEF0 node
     numbers ("A-0" is the context diagram, "A0" the top decomposition), and the largest few, so
-    you know what there is to look at.
+    you know what there is to look at. If the model open now has unsaved changes this refuses,
+    so nothing is lost or written behind your back: save_model first, or pass discard_unsaved.
     """
     if not os.path.isfile(path):
         raise ValueError(f"{path} is not a file.")
-    if _Open.model is not None:
-        _Open.model.close()
-    _Open.model = RsfModel(path)
+    if _Open.editor is not None and _Open.editor.changed and not discard_unsaved:
+        raise ValueError(f"{_Open.path} has unsaved changes. Call save_model to keep them, "
+                         f"or open_model again with discard_unsaved=true to drop them.")
+    _Open.editor = ModelEditor(path)
     _Open.path = path
-    _Open.diagrams = _Open.model.diagrams()
-    _Open.activities = _Open.model.activities()
+    _refresh()
     return {
         "opened": path,
         "diagrams": len(_Open.diagrams),
@@ -172,7 +233,8 @@ def current_model() -> Dict[str, Any]:
     """Say which model is open, if any."""
     if _Open.model is None:
         return {"open": False}
-    return {"open": True, "path": _Open.path, "diagrams": len(_Open.diagrams)}
+    return {"open": True, "path": _Open.path, "diagrams": len(_Open.diagrams),
+            "unsaved_changes": bool(_Open.editor and _Open.editor.changed)}
 
 
 @mcp.tool()
@@ -265,6 +327,93 @@ def render_diagram_svg_text(index: int = 0, node: str = "") -> str:
     """The same diagram as an SVG document (text), for saving or embedding in a page."""
     d = _diagram(index, node)
     return render_diagram_svg(d)
+
+
+# ------------------------------------------------------------------------------- the hands
+#
+# Every change is made in memory; the reading tools show it straight away, and nothing is
+# written until save_model. Activities and sheets may be named by IDEF0 number ("A12") or id.
+
+
+@mcp.tool()
+def rename_activity(activity: str, name: str) -> Dict[str, Any]:
+    """Give an activity box a new name. ``activity`` is its number ("A12") or id. IDEF0 names
+    an activity with a verb phrase: "Проверить заявку", not "Проверка"."""
+    return _edited(_Open.editor.rename_activity(_activity_id(activity), name))
+
+
+@mcp.tool()
+def rename_flow(flow: int, name: str) -> Dict[str, Any]:
+    """Give a flow - what an arrow carries, shared by all its segments and levels - a new name.
+    ``flow`` is the stream id get_diagram reports. IDEF0 names a flow with a noun phrase."""
+    _require()
+    return _edited(_Open.editor.rename_flow(int(flow), name))
+
+
+@mcp.tool()
+def add_activity(parent: str, name: str, x: Optional[float] = None, y: Optional[float] = None,
+                 width: Optional[float] = None, height: Optional[float] = None) -> Dict[str, Any]:
+    """Add an activity box to the decomposition of ``parent`` (its number, "A0", or id).
+
+    The box goes last on that sheet and takes the next number (A3 after A1, A2); adding the
+    first box under an activity gives it a decomposition. Without x/y it is placed the IDEF0
+    way, down the diagonal from the box before it, clear of boxes, arrows and labels; give them
+    (with width/height) to place it yourself, in the units get_diagram reports. Its look is
+    copied from the boxes already there. IDEF0 asks for 3 to 6 boxes on a sheet.
+    """
+    _require()
+    result = _Open.editor.add_activity(_activity_id(parent), name, x, y, width, height)
+    sheet = next((d for d in _Open.editor.snapshot().diagrams() if d.parent_id == result["parent"]), None)
+    if sheet is not None and len(sheet.activities) > 6:
+        result["note"] = (f"This sheet now has {len(sheet.activities)} boxes; IDEF0 recommends "
+                          f"at most 6 - consider decomposing one of them instead.")
+    return _edited(result)
+
+
+@mcp.tool()
+def add_arrow(sheet: str, source: Dict[str, Any], target: Dict[str, Any],
+              name: Optional[str] = None, flow: Optional[int] = None) -> Dict[str, Any]:
+    """Draw an arrow on a sheet - ``sheet`` is the number of the activity it decomposes ("A0",
+    "A12"; "A-0" for the context diagram) or its id.
+
+    ``source``: {"activity": "A1"} - the box's output, leaving its right side - or
+    {"frame": "input" | "control" | "mechanism"} - coming in from outside the decomposed
+    activity. ``target``: {"activity": "A2", "role": "input" | "control" | "mechanism"}, or
+    {"frame": "output"} - leaving it. Give ``name`` for a new flow (a noun phrase) or ``flow``
+    (a stream id from get_diagram) to draw an existing one.
+
+    An end on the frame, or on a box that has its own decomposition, is joined to the same
+    flow on the other level when that arrow is there and not yet continued (matched by flow,
+    or by name) - that keeps the levels balanced. Otherwise it is left as a tunnel. The route
+    is orthogonal and kept clear of boxes and other arrows; the name goes beside it. Files
+    from Ramus 3 only (Ramus 2 keeps routes in a form this cannot yet write).
+    """
+    _require()
+    return _edited(_Open.editor.add_arrow(_sheet_id(sheet), _end_ref(source), _end_ref(target),
+                                          name, None if flow is None else int(flow)))
+
+
+@mcp.tool()
+def save_model(path: Optional[str] = None, overwrite: bool = False) -> Dict[str, Any]:
+    """Write the model with every change made so far.
+
+    With ``path``: write a new file there (an existing file is replaced only with overwrite) -
+    the safe way to try changes, leaving the original untouched; work continues on the new
+    file. Without it: write over the file that was opened, after copying the original once to
+    <name>.backup.rsf beside it. Close the model in Ramus first if it is open there.
+    """
+    _require()
+    try:
+        result = _Open.editor.save(path, overwrite=overwrite)
+    except FileExistsError as exc:
+        raise ValueError(str(exc)) from None
+    if path is not None and os.path.abspath(path) != _Open.editor.path:
+        # Carry on with the copy, as "save as" does everywhere.
+        _Open.editor = ModelEditor(result["saved"])
+        _Open.path = result["saved"]
+    _refresh()
+    result["unsaved_changes"] = False
+    return result
 
 
 if __name__ == "__main__":

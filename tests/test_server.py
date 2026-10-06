@@ -18,6 +18,7 @@ except ImportError:  # pragma: no cover - the mcp package is a requirement
 
 
 def _reset():
+    server._Open.editor = None
     server._Open.model = None
     server._Open.path = None
     server._Open.diagrams = []
@@ -56,7 +57,8 @@ class Tools(unittest.TestCase):
         self.assertEqual(info["diagrams"], 3)
         self.assertEqual(info["nodes"], ["A0", "A1", "A-0"])
         self.assertEqual(info["largest"][0]["node"], "A0")
-        self.assertEqual(server.current_model(), {"open": True, "path": self.path, "diagrams": 3})
+        self.assertEqual(server.current_model(),
+                         {"open": True, "path": self.path, "diagrams": 3, "unsaved_changes": False})
 
     def test_list_diagrams_gives_node_and_sizes(self):
         server.open_model(self.path)
@@ -152,6 +154,65 @@ class Tools(unittest.TestCase):
 
 
 @unittest.skipIf(server is None, "mcp package not installed")
+class Editing(unittest.TestCase):
+    """The hands, called as the tools are: by IDEF0 number, seen at once, written on save."""
+
+    def setUp(self):
+        _reset()
+        self._dir = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self._dir.name, "tiny.rsf")
+        fx.tiny_model(self.path)
+        server.open_model(self.path)
+
+    def tearDown(self):
+        _reset()
+        self._dir.cleanup()
+
+    def test_a_change_is_seen_at_once_and_not_written_until_saved(self):
+        with open(self.path, "rb") as fh:
+            original = fh.read()
+        server.rename_activity("A1", "Подготовить всё")
+        names = [a["name"] for a in server.get_diagram(node="A0")["activities"]]
+        self.assertIn("Подготовить всё", names)
+        self.assertTrue(server.current_model()["unsaved_changes"])
+        with open(self.path, "rb") as fh:
+            self.assertEqual(fh.read(), original)
+
+    def test_add_a_box_and_an_arrow_by_number_then_save_as(self):
+        box = server.add_activity("A0", "Проверить")
+        self.assertEqual(box["number"], "A3")
+        arrow = server.add_arrow("A0", {"activity": "A2"}, {"activity": "A3", "role": "input"},
+                                 "результат проверки")
+        self.assertEqual(arrow["to"]["number"], "A3")
+        flows = server.get_diagram(node="A0")["flows"]
+        self.assertTrue(any(f["name"] == "результат проверки" for f in flows))
+        out = os.path.join(self._dir.name, "edited.rsf")
+        saved = server.save_model(out)
+        self.assertEqual(saved["saved"], os.path.abspath(out))
+        self.assertEqual(server.current_model()["path"], os.path.abspath(out))
+        self.assertFalse(server.current_model()["unsaved_changes"])
+        from ramus_rsf import RsfModel
+        reread = {d.node: d for d in RsfModel(out).diagrams()}["A0"]
+        self.assertEqual([a.number for a in reread.activities], ["A1", "A2", "A3"])
+
+    def test_saving_over_the_original_keeps_a_backup(self):
+        server.rename_flow(fx.S_DATA, "сведения")
+        result = server.save_model()
+        self.assertTrue(os.path.isfile(result["backup"]))
+
+    def test_switching_models_never_drops_or_writes_changes_silently(self):
+        server.rename_activity("A2", "Другое")
+        with self.assertRaisesRegex(ValueError, "unsaved changes"):
+            server.open_model(self.path)
+        server.open_model(self.path, discard_unsaved=True)
+        self.assertFalse(server.current_model()["unsaved_changes"])
+
+    def test_flows_carry_their_stream_id_for_the_editing_tools(self):
+        flows = server.get_diagram(node="A0")["flows"]
+        self.assertTrue(all("stream" in f for f in flows))
+
+
+@unittest.skipIf(server is None, "mcp package not installed")
 class OverStdio(unittest.TestCase):
     """The same thing through the real protocol: spawn the server and talk to it."""
 
@@ -181,7 +242,8 @@ class OverStdio(unittest.TestCase):
         self.assertEqual(
             {t.name for t in tools.tools},
             {"open_model", "current_model", "list_diagrams", "get_function_tree",
-             "get_diagram", "render_diagram", "render_diagram_svg_text"},
+             "get_diagram", "render_diagram", "render_diagram_svg_text",
+             "rename_activity", "rename_flow", "add_activity", "add_arrow", "save_model"},
         )
         self.assertFalse(opened.isError)
         data = json.loads(diagram.content[0].text)
