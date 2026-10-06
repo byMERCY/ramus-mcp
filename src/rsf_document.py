@@ -248,6 +248,7 @@ class RsfDocument:
         self._sequences_text = self._members.get(SEQUENCES, b"").decode("utf-8")
         self._sequences_dirty = False
         self._next_element: Optional[int] = None
+        self._handed_out: Dict[str, int] = {}
 
     # ------------------------------------------------------------ members
 
@@ -363,9 +364,14 @@ class RsfDocument:
 
     def _take(self, key: str, used: Iterable[int]) -> int:
         """The next number of a Ramus counter: never below the counter, never one already
-        used in the tables (a file edited by hand may disagree with its counter)."""
-        floor = max([v + 1 for v in used] + [self.sequence(key) or 0, 0])
-        self._set_sequence(key, floor + 1)
+        used in the tables (a file edited by hand may disagree with its counter), never one
+        handed out earlier in this session. The counter in data/sequences.xml is moved on; a
+        file without that member just gets distinct numbers."""
+        floor = max([v + 1 for v in used] + [self.sequence(key) or 0, 0,
+                                             self._handed_out.get(key, 0)])
+        self._handed_out[key] = floor + 1
+        if "</properties>" in self._sequences_text:
+            self._set_sequence(key, floor + 1)
         return floor
 
     def new_crosspoint(self) -> int:

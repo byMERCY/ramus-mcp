@@ -16,14 +16,21 @@ import io
 import os
 import shutil
 import struct
-from typing import Dict, List, Optional
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
 
 try:
+    from . import router as rt
+    from . import visual_data as vd
     from .rsf_document import RsfDocument, Row
     from .ramus_rsf import RsfModel
+    from .scene import text_width, wrap
 except ImportError:  # pragma: no cover - script execution
+    import router as rt
+    import visual_data as vd
     from rsf_document import RsfDocument, Row
     from ramus_rsf import RsfModel
+    from scene import text_width, wrap
 
 TEXTS = "Core/attribute_texts"
 
@@ -277,6 +284,300 @@ class ModelEditor:
                 values[c] = default.get(c)
         self._add_value(table, attribute, element_id, values)
 
+    # ------------------------------------------------------------ adding an arrow
+
+    def add_arrow(self, sheet_id: int, source: Dict[str, object], target: Dict[str, object],
+                  name: Optional[str] = None, flow: Optional[int] = None) -> Dict[str, object]:
+        """Draw an arrow on the sheet that decomposes ``sheet_id``.
+
+        ``source`` is where it comes from: ``{"activity": id}`` (an output, leaving the right
+        side of a box), or ``{"frame": "input" | "control" | "mechanism"}`` - something coming
+        in from outside the decomposed activity. ``target`` is where it goes:
+        ``{"activity": id, "role": "input" | "control" | "mechanism"}``, or
+        ``{"frame": "output"}`` - leaving the decomposed activity.
+
+        The arrow carries a new flow called ``name``, or the existing flow ``flow``. Where it
+        meets the frame, or a box that has a decomposition of its own, it is joined to the
+        same flow on the other level if that arrow is there and not yet continued - the same
+        flow and the same node, which is what keeps IDEF0's arrows balanced between levels.
+        With nothing to join it is left as a tunnel, as Ramus shows it.
+
+        The route is orthogonal, leaves and enters by the sides the roles call for, keeps clear
+        of the boxes and avoids crossing or running along the other arrows; its name is put
+        beside its longest straight piece.
+        """
+        if self._version() != 2:
+            raise EditError("Arrows can be added to files in the Ramus 3 format only. A Ramus 2 "
+                            "file keeps its arrow routes in a binary diagram record: open it in "
+                            "Ramus 3 and save it once, then draw arrows on it here.")
+        model = self.snapshot()
+        sheets = {d.parent_id: d for d in model.diagrams()}
+        acts = model.activities()
+        sheet = sheets.get(sheet_id)
+        if sheet is None:
+            raise EditError(f"Activity {sheet_id} has no decomposition to draw on. Add a box "
+                            f"under it first (add_activity), or pick a sheet from list_diagrams.")
+        on_sheet = {a.element_id: a for a in sheet.activities}
+        src = _end_spec(source, "source", on_sheet)
+        dst = _end_spec(target, "target", on_sheet)
+        if src.kind == "frame" and dst.kind == "frame":
+            raise EditError("An arrow from the frame straight back to the frame touches no box. "
+                            "One end has to be on an activity.")
+        if src.activity is not None and dst.activity is not None \
+                and src.activity.element_id == dst.activity.element_id:
+            raise EditError("An arrow from a box back into the same box is not drawn this way in "
+                            "IDEF0; feed the output to another activity.")
+
+        # ---- the flow, and the arrows on the other level it may be joined to
+        names = self._stream_names()
+        if flow is not None:
+            if flow not in names:
+                raise EditError(f"There is no flow {flow}. get_diagram reports each arrow's "
+                                f"stream id.")
+            if name and name.strip() != names[flow]:
+                raise EditError(f"Flow {flow} is called {names[flow]!r}. Leave the name out to "
+                                f"draw it, or rename it with rename_flow.")
+            stream, label = flow, names[flow]
+        elif name and name.strip():
+            stream, label = None, name.strip()
+        else:
+            raise EditError("An arrow needs a name (a new flow) or a flow id (an existing one).")
+
+        links: Dict[str, Tuple[int, int]] = {}
+        for which, spec in (("source", src), ("target", dst)):
+            partner = self._partner(spec, which, sheet, sheets, acts, stream, label)
+            if partner is not None:
+                node, partner_stream = partner
+                if stream is None:
+                    stream = partner_stream
+                if partner_stream == stream:
+                    links[which] = (node, partner_stream)
+
+        # ---- geometry
+        left, top, right, bottom = sheet.frame
+        frame_rect = (left, top, right - left, bottom - top)
+        boxes = [(a.x, a.y, a.width, a.height) for a in sheet.activities]
+        lines = [(p, q) for a in sheet.arrows for p, q in zip(a.points, a.points[1:])]
+        s_along, d_along = self._attach_both(src, dst, sheet, frame_rect)
+        start = rt.point_on(_rect_of(src, frame_rect), src.side, s_along)
+        end = rt.point_on(_rect_of(dst, frame_rect), dst.side, d_along)
+        out = rt.OUTWARD
+        start_dir = out[src.side] if src.kind == "activity" else _back(out[src.side])
+        end_dir = _back(out[dst.side]) if dst.kind == "activity" else out[dst.side]
+        points = rt.route(start, start_dir, end, end_dir, boxes, frame_rect, lines)
+
+        style_hex = self._sheet_style(sheet_id)
+        font_size = _font_size_of(style_hex)
+        text_box = _place_label(label, font_size, points, boxes,
+                                [(a.label.x, a.label.y, a.label.width, a.label.height)
+                                 for a in sheet.arrows if a.label is not None] +
+                                [(t.x, t.y, t.width, t.height) for t in sheet.texts],
+                                frame_rect, lines)
+
+        # ---- write it
+        doc = self.doc
+        if stream is None:
+            stream = self._new_stream(label)
+        sector = doc.new_element_id()
+        doc.add_row("elements", {"ELEMENT_ID": sector, "ELEMENT_NAME": "",
+                                 "QUALIFIER_ID": self._require_qualifier("F_SECTORS")},
+                    lenient=True)
+        self._add_link(sector, "F_FUNCTION_SECTOR", sheet_id)
+        self._add_link(sector, "F_SECTOR_STREAM", stream)
+        self._add_value("IDEF0/attribute_sectors", "F_SECTOR_ATTRIBUTE", sector, {
+            "CREATE_POS": 0.0, "CREATE_STATE": -1, "SHOW_TEXT": 1, "TEXT_ALIGMENT": 0,
+            "VISUAL_ATTRIBUTES": style_hex,
+        })
+        nodes = {}
+        for which, spec, attr in (("source", src, "F_SECTOR_BORDER_START"),
+                                  ("target", dst, "F_SECTOR_BORDER_END")):
+            node = links[which][0] if which in links else doc.new_crosspoint()
+            nodes[which] = node
+            self._add_value("IDEF0/attribute_sector_borders", attr, sector, {
+                "BORDER_TYPE": spec.side if spec.kind == "frame" else -1,
+                "FUNCTION": spec.activity.element_id if spec.kind == "activity" else -1,
+                "FUNCTION_TYPE": spec.side if spec.kind == "activity" else -1,
+                "CROSSPOINT": node, "TUNNEL_SOFT": 0,
+            })
+        self._write_points(sector, points)
+        tx, ty, tw, th = text_box
+        self._add_value("IDEF0/attribute_sector_properties", "F_SECTOR_PROPERTIES", sector, {
+            "SHOW_TEXT": 1, "SHOW_TILDA": 0, "TEXT_X": tx, "TEXT_Y": ty, "TEXT_WIDTH": tw,
+            "TEXT_HIEGHT": th, "TILDA_POS": 0.0, "TRANSPARENT": 1,
+        })
+        return {
+            "sector": sector, "stream": stream, "name": label,
+            "from": _describe_end(src), "to": _describe_end(dst),
+            "joined_to_other_level": sorted(links),
+            "route": [(round(x, 2), round(y, 2)) for x, y in points],
+        }
+
+    # ---- arrow helpers
+
+    def _require_qualifier(self, name: str) -> int:
+        q = self.doc.qualifier_id(name)
+        if q is None:
+            raise EditError(f"This file has no {name} catalog - it does not look like an "
+                            f"IDEF0 model.")
+        return q
+
+    def _stream_names(self) -> Dict[int, str]:
+        """Every live flow and its name."""
+        branch = self.doc.current_branch()
+        streams = self.doc.qualifier_id("F_STREAMS")
+        attr = self.doc.attribute_id("F_STREAM_NAME")
+        names = {}
+        for r in self.doc.table("elements").rows:
+            if streams is not None and r.get("QUALIFIER_ID") == str(streams) \
+                    and self.doc.alive(r, branch):
+                eid = int(r["ELEMENT_ID"])
+                row = self._live_value_row(TEXTS, attr, eid) if attr is not None else None
+                names[eid] = ((row or {}).get("VALUE") or "").strip()
+        return names
+
+    def _new_stream(self, name: str) -> int:
+        """A new flow, named, and put last in the file's list of flows."""
+        doc = self.doc
+        stream = doc.new_element_id()
+        doc.add_row("elements", {"ELEMENT_ID": stream, "ELEMENT_NAME": "",
+                                 "QUALIFIER_ID": self._require_qualifier("F_STREAMS")},
+                    lenient=True)
+        existing = set(self._stream_names()) - {stream}
+        hier = doc.table("Core/attribute_hierarchicals")
+        rows = [r for r in hier.rows if r.get("ELEMENT_ID") and int(r["ELEMENT_ID"]) in existing]
+        if rows:
+            named_as_previous = {r.get("PREVIOUS_ELEMENT_ID") for r in rows}
+            last = next((int(r["ELEMENT_ID"]) for r in reversed(rows)
+                         if r["ELEMENT_ID"] not in named_as_previous), -1)
+            template = rows[0]
+            doc.add_row("Core/attribute_hierarchicals", {
+                "ATTRIBUTE_ID": int(template.get("ATTRIBUTE_ID", "1")), "ELEMENT_ID": stream,
+                "ICON_ID": -1, "PARENT_ELEMENT_ID": -1, "PREVIOUS_ELEMENT_ID": last,
+            }, lenient=True)
+        self._set_text(stream, self._require_attribute("F_STREAM_NAME"), name)
+        return stream
+
+    def _add_link(self, element_id: int, attribute: str, other: int) -> None:
+        self.doc.add_row("Core/attribute_other_elements", {
+            "ATTRIBUTE_ID": self._require_attribute(attribute), "ELEMENT_ID": element_id,
+            "OTHER_ELEMENT": other}, lenient=True)
+
+    def _sheet_style(self, sheet_id: int) -> object:
+        """The look most arrows on this sheet have (else in the file), as stored; a plain thin
+        black line in Dialog 10 if the file has no arrow to copy."""
+        owner_attr = self.doc.attribute_id("F_FUNCTION_SECTOR")
+        on_sheet = {r["ELEMENT_ID"] for r in self.doc.table("Core/attribute_other_elements").rows
+                    if owner_attr is not None and r.get("ATTRIBUTE_ID") == str(owner_attr)
+                    and r.get("OTHER_ELEMENT") == str(sheet_id)}
+        counts: Dict[str, int] = {}
+        everywhere: Dict[str, int] = {}
+        for r in self.doc.table("IDEF0/attribute_sectors").rows:
+            v = r.get("VISUAL_ATTRIBUTES")
+            if not v:
+                continue
+            everywhere[v] = everywhere.get(v, 0) + 1
+            if r.get("ELEMENT_ID") in on_sheet:
+                counts[v] = counts.get(v, 0) + 1
+        for pool in (counts, everywhere):
+            if pool:
+                return max(pool, key=pool.get)  # the masked hex text, copied as is
+        return vd.encode_sector_style()
+
+    def _partner(self, spec, which: str, sheet, sheets, acts, stream: Optional[int],
+                 label: str) -> Optional[Tuple[int, int]]:
+        """The arrow on the other level this end continues, if it is there and not yet
+        continued: (its node, its flow). Matched by flow, or by name when the flow is new."""
+        side = rt_side_name(spec.side)
+        if spec.kind == "frame":
+            owner = acts.get(sheet.parent_id)
+            if owner is None:
+                return None  # the context diagram: nothing above it
+            other = sheets.get(owner.parent_id)
+            box_id = owner.element_id
+            want = "end" if which == "source" else "start"
+            here = {e.node for a in sheet.arrows for e in (a.start, a.end)
+                    if e.kind == "frame" and e.side == side}
+            candidates = [(a, getattr(a, want)) for a in (other.arrows if other else [])]
+            candidates = [(a, e) for a, e in candidates if e.kind == "activity"
+                          and e.activity_id == box_id and e.side == side]
+        else:
+            child = sheets.get(spec.activity.element_id)
+            if child is None:
+                return None  # a box with no decomposition: nothing below it
+            want = "start" if which == "target" else "end"
+            here = {e.node for a in sheet.arrows for e in (a.start, a.end)
+                    if e.kind == "activity" and e.activity_id == spec.activity.element_id
+                    and e.side == side}
+            candidates = [(a, getattr(a, want)) for a in child.arrows]
+            candidates = [(a, e) for a, e in candidates if e.kind == "frame" and e.side == side]
+        key = label.strip().casefold()
+        for a, e in candidates:
+            if e.node is None or e.node in here:
+                continue
+            if (stream is not None and a.stream_id == stream) or \
+                    (stream is None and a.name.strip().casefold() == key):
+                return e.node, a.stream_id
+        return None
+
+    def _attach_both(self, src, dst, sheet, frame_rect) -> Tuple[float, float]:
+        """Where each end attaches along its side, lined up for a straight arrow when the two
+        sides face each other and there is room."""
+        def taken(spec):
+            out = []
+            for a in sheet.arrows:
+                for e, p in ((a.start, a.points[0] if a.points else None),
+                             (a.end, a.points[-1] if a.points else None)):
+                    if p is None or e.side != rt_side_name(spec.side) or e.kind != spec.kind:
+                        continue
+                    if spec.kind == "activity" and e.activity_id != spec.activity.element_id:
+                        continue
+                    out.append(p[1] if spec.side in (rt.SIDE_LEFT, rt.SIDE_RIGHT) else p[0])
+            return out
+
+        def attach(spec, prefer=None):
+            corner = 8.0 if spec.kind == "activity" else 2 * rt.MARGIN
+            return rt.attach(_rect_of(spec, frame_rect), spec.side, taken(spec), prefer,
+                             corner=corner)
+
+        horizontal = {rt.SIDE_LEFT, rt.SIDE_RIGHT}
+        parallel = (src.side in horizontal) == (dst.side in horizontal)
+        if src.kind == "activity" and dst.kind == "activity":
+            if parallel:
+                a, b = _rect_of(src, frame_rect), _rect_of(dst, frame_rect)
+                axis = 1 if src.side in horizontal else 0
+                lo = max(a[axis], b[axis]) + 8.0
+                hi = min(a[axis] + a[axis + 2], b[axis] + b[axis + 2]) - 8.0
+                if hi > lo:
+                    s = attach(src, (lo + hi) / 2)
+                    return s, attach(dst, s)
+            return attach(src), attach(dst)
+        if src.kind == "frame":
+            d = attach(dst)
+            return attach(src, d if parallel else None), d
+        s = attach(src)
+        return s, attach(dst, s if parallel else None)
+
+    def _write_points(self, sector: int, points) -> None:
+        """The route, point by point. Points on one horizontal piece share a y ordinate and on
+        a vertical piece an x ordinate - the links Ramus keeps a route orthogonal by."""
+        doc = self.doc
+        x_ord = y_ord = None
+        for i, (x, y) in enumerate(points):
+            if i == 0:
+                x_ord, y_ord = doc.new_ordinate(), doc.new_ordinate()
+            else:
+                px, py = points[i - 1]
+                if py == y:
+                    x_ord = doc.new_ordinate()
+                elif px == x:
+                    y_ord = doc.new_ordinate()
+                else:
+                    x_ord, y_ord = doc.new_ordinate(), doc.new_ordinate()
+            self._add_value("IDEF0/attribute_sector_points", "F_SECTOR_POINTS", sector, {
+                "POSITION": i, "POINT_TYPE": -1, "X_POSITION": float(x), "Y_POSITION": float(y),
+                "X_ORDINATE_ID": x_ord, "Y_ORDINATE_ID": y_ord,
+            })
+
     # ------------------------------------------------------------------- save
 
     def save(self, path: Optional[str] = None, overwrite: bool = False) -> Dict[str, object]:
@@ -393,6 +694,134 @@ def _inside_frame(x: float, y: float, w: float, h: float, frame) -> None:
     if x < left or y < top or x + w > right or y + h > bottom:
         raise EditError(f"That box would stick out of the sheet. The drawable area runs "
                         f"{left:g}..{right:g} across and {top:g}..{bottom:g} down.")
+
+
+# ------------------------------------------------------------------- arrow ends
+
+ROLE_SIDE = {"output": rt.SIDE_RIGHT, "mechanism": rt.SIDE_BOTTOM,
+             "input": rt.SIDE_LEFT, "control": rt.SIDE_TOP}
+_SIDE_NAMES = {rt.SIDE_RIGHT: "right", rt.SIDE_BOTTOM: "bottom",
+               rt.SIDE_LEFT: "left", rt.SIDE_TOP: "top"}
+_LINE_HEIGHT = 0.980078125  # of the font size: Java's height of a line of Dialog
+_LABEL_WRAP = 110.0  # a name longer than this runs onto more lines
+
+
+def rt_side_name(side: int) -> str:
+    return _SIDE_NAMES[side]
+
+
+@dataclass
+class _EndSpec:
+    kind: str  # "activity" or "frame"
+    side: int
+    activity: Optional[object] = None  # ramus_rsf.Activity
+    role: str = ""
+
+
+def _end_spec(spec: Dict[str, object], which: str, on_sheet) -> _EndSpec:
+    """Read one end of a requested arrow, refusing what IDEF0 does not allow."""
+    if not isinstance(spec, dict):
+        raise EditError(f'The {which} must be an object such as {{"activity": 12, "role": '
+                        f'"input"}} or {{"frame": "input"}}.')
+    if "frame" in spec:
+        role = str(spec["frame"]).lower()
+        allowed = ("input", "control", "mechanism") if which == "source" else ("output",)
+        if role not in allowed:
+            raise EditError(f"From the frame an arrow comes in as an input, control or "
+                            f"mechanism, and to the frame it leaves as the output. "
+                            f"{role!r} cannot be the {which}'s frame role.")
+        return _EndSpec("frame", ROLE_SIDE[role], role=role)
+    if "activity" not in spec:
+        raise EditError(f'The {which} names neither an activity nor the frame.')
+    try:
+        aid = int(spec["activity"])
+    except (TypeError, ValueError):
+        raise EditError(f"The {which}'s activity must be an id, not {spec['activity']!r}.")
+    if aid not in on_sheet:
+        raise EditError(f"Activity {aid} is not a box on this sheet. An arrow joins boxes on "
+                        f"the same sheet; get_diagram lists them.")
+    if which == "source":
+        role = str(spec.get("role", "output")).lower()
+        if role != "output":
+            raise EditError("An arrow leaves a box from its output (the right side). Swap the "
+                            "ends: what a box takes in is the arrow's target.")
+    else:
+        role = str(spec.get("role", "")).lower()
+        if role not in ("input", "control", "mechanism"):
+            raise EditError("Say what the arrow is to the target box: input, control or "
+                            "mechanism.")
+    return _EndSpec("activity", ROLE_SIDE[role], activity=on_sheet[aid], role=role)
+
+
+def _describe_end(spec: _EndSpec) -> Dict[str, object]:
+    if spec.kind == "frame":
+        return {"frame": spec.role, "side": rt_side_name(spec.side)}
+    return {"activity": spec.activity.element_id, "number": spec.activity.number,
+            "role": spec.role, "side": rt_side_name(spec.side)}
+
+
+def _rect_of(spec: _EndSpec, frame_rect):
+    if spec.kind == "frame":
+        return frame_rect
+    a = spec.activity
+    return (a.x, a.y, a.width, a.height)
+
+
+def _back(direction):
+    return (-direction[0], -direction[1])
+
+
+def _font_size_of(style) -> float:
+    try:
+        data = style if isinstance(style, (bytes, bytearray)) else vd.unmask(str(style))
+        font = vd.decode_sector_style(bytes(data)).font
+        return float(font.size) if font and font.size else 10.0
+    except Exception:  # an unreadable style is drawn with the default; so is its label
+        return 10.0
+
+
+def _place_label(text: str, size: float, points, boxes, labels, frame_rect, lines=()):
+    """The rectangle an arrow's name goes in: beside the longest straight piece of its route
+    that has room - above a horizontal piece or right of a vertical one, else the other side,
+    centred on it or flush with either end - clear of boxes, other names, other arrows' lines
+    and the ends of its own (where the head or a tunnel bracket goes), inside the sheet. A
+    name that fits nowhere on one or two lines is tried again wrapped narrower."""
+    fx, fy, fw, fh = frame_rect
+    keep_off = list(boxes) + list(labels)
+    for p, q in lines:
+        keep_off.append((min(p[0], q[0]), min(p[1], q[1]), abs(p[0] - q[0]), abs(p[1] - q[1])))
+    for p in (points[0], points[-1]):
+        keep_off.append((p[0] - 10.0, p[1] - 10.0, 20.0, 20.0))
+
+    def clear(r) -> bool:
+        x, y, rw, rh = r
+        if x < fx + 2 or y < fy + 2 or x + rw > fx + fw - 2 or y + rh > fy + fh - 2:
+            return False
+        return not any(_overlaps(r, o, 1.5) for o in keep_off)
+
+    pieces = sorted(zip(points, points[1:]),
+                    key=lambda ab: -(abs(ab[1][0] - ab[0][0]) + abs(ab[1][1] - ab[0][1])))
+    first = None
+    for wrap_width in (_LABEL_WRAP, 75.0, 50.0):
+        rows = wrap(text, wrap_width, size) or [text]
+        w = max(text_width(row, size) for row in rows) + 4.0
+        h = len(rows) * _LINE_HEIGHT * size
+        for a, b in pieces:
+            mx, my = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
+            if a[1] == b[1]:
+                x0, x1 = sorted((a[0], b[0]))
+                xs = [mx - w / 2, x0 + 12.0, x1 - w - 12.0]
+                options = [(x, y, w, h) for y in (my - h - 3.0, my + 3.0) for x in xs]
+            else:
+                y0, y1 = sorted((a[1], b[1]))
+                ys = [my - h / 2, y0 + 12.0, y1 - h - 12.0]
+                options = [(x, y, w, h) for x in (mx + 4.0, mx - w - 4.0) for y in ys]
+            for r in options:
+                if first is None:
+                    first = r
+                if clear(r):
+                    return r
+    return first or (points[0][0], points[0][1] - 13.0, 40.0, 10.0)
 
 
 def _clean_name(name: str, what: str) -> str:

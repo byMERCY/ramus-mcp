@@ -235,6 +235,47 @@ def decode_sector_style(data: bytes) -> SectorStyle:
     return SectorStyle(stroke, font, color)
 
 
+def encode_sector_style(width: float = 1.0, rgb: Tuple[int, int, int] = (0, 0, 0),
+                        font: Tuple[str, int, int] = ("Dialog", 10, 0),
+                        dash: Optional[Tuple[float, ...]] = None) -> bytes:
+    """A sector's ``VISUAL_ATTRIBUTES`` - the inverse of :func:`decode_sector_style` for a
+    self-contained style: a new stroke (round cap, mitre join), a new font, a new colour."""
+    out = bytearray()
+
+    def i32(v: int) -> None:
+        out.extend(struct.pack("<i", v))
+
+    def f64(v: float) -> None:
+        out.extend(struct.pack("<d", v))
+
+    def flag(v: bool) -> None:
+        out.append(1 if v else 0)
+
+    flag(True)  # stroke: new
+    f64(width)
+    i32(2)  # cap: java.awt.BasicStroke.CAP_SQUARE, what Ramus writes
+    i32(0)  # join: JOIN_MITER
+    f64(0.0)  # dash phase
+    f64(10.0)  # miter limit
+    if dash:
+        i32(len(dash))
+        for d in dash:
+            f64(d)
+    else:
+        i32(-1)
+    flag(False)  # font: not null
+    flag(True)  # font: new
+    name = font[0].encode("utf-8")
+    i32(len(name))
+    out.extend(name)
+    i32(font[1])
+    i32(font[2])
+    flag(True)  # colour: new
+    for c in rgb:
+        i32(c)
+    return bytes(out)
+
+
 # ----------------------------------------------------------------------------- diagram blob
 
 

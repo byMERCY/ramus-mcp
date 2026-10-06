@@ -310,5 +310,131 @@ class Adding(unittest.TestCase):
         self.assertTrue(data["DATA"])  # Ramus 2 stores an empty diagram for a leaf
 
 
+class Arrows(unittest.TestCase):
+    """The fixture's A0 sheet (TOP decomposed) holds C1 = A1, itself decomposed into G1, and
+    C2 = A2. On A0 the flow "данные" enters C1's input from the frame; on C1's own sheet that
+    arrow has no continuation yet."""
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self._dir.name, "tiny.rsf")
+        fx.tiny_model(self.path)
+        self.editor = ModelEditor(self.path)
+
+    def tearDown(self):
+        self._dir.cleanup()
+
+    def _sheet(self, parent_id):
+        return next(d for d in self.editor.snapshot().diagrams() if d.parent_id == parent_id)
+
+    def _arrow(self, sector):
+        return next(a for d in self.editor.snapshot().diagrams() for a in d.arrows
+                    if a.sector_id == sector)
+
+    def test_an_output_to_a_control_reads_back_with_its_ends_and_name(self):
+        r = self.editor.add_arrow(fx.TOP, {"activity": fx.C1},
+                                  {"activity": fx.C2, "role": "control"}, "указание")
+        a = self._arrow(r["sector"])
+        self.assertEqual(a.name, "указание")
+        self.assertEqual((a.start.kind, a.start.activity_id, a.start.role),
+                         ("activity", fx.C1, "output"))
+        self.assertEqual((a.end.kind, a.end.activity_id, a.end.role),
+                         ("activity", fx.C2, "control"))
+        c1, c2 = fx.BOXES[fx.C1], fx.BOXES[fx.C2]
+        self.assertEqual(a.points[0][0], c1[0] + c1[2])   # leaves C1's right side
+        self.assertEqual(a.points[-1][1], c2[1])           # arrives on C2's top
+
+    def test_the_route_is_orthogonal_and_keeps_out_of_the_boxes(self):
+        r = self.editor.add_arrow(fx.TOP, {"activity": fx.C2},
+                                  {"activity": fx.C1, "role": "input"}, "возврат")
+        pts = self._arrow(r["sector"]).points
+        for p, q in zip(pts, pts[1:]):
+            self.assertTrue(p[0] == q[0] or p[1] == q[1], (p, q))
+            for box in self._sheet(fx.TOP).activities:
+                rect = (box.x, box.y, box.width, box.height)
+                inside = (rect[0] + 1, rect[1] + 1, rect[2] - 2, rect[3] - 2)
+                self.assertFalse(_touches((min(p[0], q[0]), min(p[1], q[1]),
+                                           abs(p[0] - q[0]), abs(p[1] - q[1])), inside),
+                                 f"{(p, q)} runs through {box.name}")
+
+    def test_route_points_share_ordinates_along_each_straight_piece(self):
+        r = self.editor.add_arrow(fx.TOP, {"activity": fx.C1},
+                                  {"activity": fx.C2, "role": "control"}, "указание")
+        rows = sorted(self.editor.doc.table("IDEF0/attribute_sector_points").where(
+            ELEMENT_ID=r["sector"]), key=lambda row: int(row["POSITION"]))
+        self.assertGreaterEqual(len(rows), 2)
+        for a, b in zip(rows, rows[1:]):
+            if a["Y_POSITION"] == b["Y_POSITION"]:
+                self.assertEqual(a["Y_ORDINATE_ID"], b["Y_ORDINATE_ID"])
+            if a["X_POSITION"] == b["X_POSITION"]:
+                self.assertEqual(a["X_ORDINATE_ID"], b["X_ORDINATE_ID"])
+        self.assertTrue(all(row["POINT_TYPE"] == "-1" for row in rows))
+
+    def test_a_new_flow_is_created_with_its_name(self):
+        r = self.editor.add_arrow(fx.TOP, {"activity": fx.C1},
+                                  {"activity": fx.C2, "role": "mechanism"}, "исполнитель")
+        element = self.editor.doc.table("elements").where(ELEMENT_ID=r["stream"])[0]
+        self.assertEqual(element["QUALIFIER_ID"], str(fx.Q_STREAMS))
+        self.assertEqual(self.editor._stream_names()[r["stream"]], "исполнитель")
+
+    def test_an_existing_flow_can_be_drawn_again_by_id(self):
+        before = len(self.editor.doc.table("elements").rows)
+        r = self.editor.add_arrow(fx.TOP, {"activity": fx.C1},
+                                  {"activity": fx.C2, "role": "control"}, flow=fx.S_RESULT)
+        self.assertEqual(r["stream"], fx.S_RESULT)
+        self.assertEqual(r["name"], "результат")
+        self.assertEqual(len(self.editor.doc.table("elements").rows), before + 1)  # the sector only
+
+    def test_a_frame_arrow_joins_the_same_flow_left_unfinished_on_the_level_above(self):
+        r = self.editor.add_arrow(fx.C1, {"frame": "input"},
+                                  {"activity": fx.G1, "role": "control"}, "данные")
+        self.assertEqual(r["joined_to_other_level"], ["source"])
+        self.assertEqual(r["stream"], fx.S_DATA)
+        new = self._arrow(r["sector"])
+        self.assertEqual(new.start.node, 101)   # the node of A0's arrow into C1
+        self.assertIsNone(self._arrow(30).end.tunnel)  # so that end is no longer a tunnel
+
+    def test_a_frame_arrow_with_nothing_to_join_is_left_a_tunnel(self):
+        r = self.editor.add_arrow(fx.C1, {"activity": fx.G1}, {"frame": "output"}, "отчёт")
+        self.assertEqual(r["joined_to_other_level"], [])
+        self.assertEqual(self._arrow(r["sector"]).end.tunnel, "hard")
+
+    def test_the_name_is_placed_clear_of_the_boxes(self):
+        r = self.editor.add_arrow(fx.TOP, {"activity": fx.C1},
+                                  {"activity": fx.C2, "role": "control"}, "указание")
+        lb = self._arrow(r["sector"]).label
+        self.assertIsNotNone(lb)
+        for box in self._sheet(fx.TOP).activities:
+            self.assertFalse(_touches((lb.x, lb.y, lb.width, lb.height),
+                                      (box.x, box.y, box.width, box.height)), box.name)
+
+    def test_what_idef0_does_not_allow_is_refused(self):
+        add = self.editor.add_arrow
+        cases = [
+            (fx.TOP, {"frame": "input"}, {"frame": "output"}, "x"),               # frame to frame
+            (fx.TOP, {"activity": fx.C1, "role": "input"},
+             {"activity": fx.C2, "role": "input"}, "x"),                          # leaves by an input
+            (fx.TOP, {"activity": fx.C1}, {"activity": fx.C2}, "x"),              # no role at target
+            (fx.TOP, {"activity": fx.G1}, {"activity": fx.C2, "role": "input"}, "x"),  # not on sheet
+            (fx.TOP, {"activity": fx.C1}, {"activity": fx.C1, "role": "input"}, "x"),  # into itself
+            (fx.TOP, {"activity": fx.C1}, {"activity": fx.C2, "role": "input"}, None),  # no name
+            (fx.C2, {"activity": fx.C2}, {"frame": "output"}, "x"),               # C2 has no sheet
+        ]
+        for sheet, src, dst, name in cases:
+            with self.subTest(src=src, dst=dst):
+                with self.assertRaises(EditError):
+                    add(sheet, src, dst, name)
+
+    @unittest.skipUnless(_paths.MODEL_EXAMPLE, "Ramus samples not installed")
+    def test_a_ramus2_file_is_refused_with_the_way_out(self):
+        editor = ModelEditor(_paths.MODEL_EXAMPLE)
+        a0 = next(a for a in editor.snapshot().activities().values() if a.number == "A0")
+        kids = [a for a in editor.snapshot().activities().values() if a.parent_id == a0.element_id]
+        with self.assertRaises(EditError) as caught:
+            editor.add_arrow(a0.element_id, {"activity": kids[0].element_id},
+                             {"activity": kids[1].element_id, "role": "input"}, "x")
+        self.assertIn("Ramus 3", str(caught.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
