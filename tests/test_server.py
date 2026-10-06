@@ -234,6 +234,21 @@ class Editing(unittest.TestCase):
         names = [f["name"] for f in server.get_diagram(node="A0")["flows"]]
         self.assertNotIn("результат", names)
 
+    def test_branch_off_an_arrow_by_its_segment_id(self):
+        flow = next(f for f in server.get_diagram(node="A0")["flows"] if f["stream"] == fx.S_DATA)
+        result = server.add_arrow("A0", {"arrow": flow["segments"][0]},
+                                  {"activity": "A2", "role": "control"})
+        self.assertIn("fork", result)
+        forked = next(f for f in server.get_diagram(node="A0")["flows"] if f["stream"] == fx.S_DATA)
+        self.assertIn("A2", [e.get("number") for e in forked["to"]])
+
+    def test_tidy_a_sheet_and_its_names_by_number(self):
+        result = server.tidy_sheet("A0")
+        self.assertEqual(result["sheet"], "A0")
+        self.assertIn("rerouted", result)
+        self.assertIn("labels_moved", server.tidy_labels("A0"))
+        self.assertTrue(server.current_model()["unsaved_changes"])
+
 
 @unittest.skipIf(server is None, "mcp package not installed")
 class OverStdio(unittest.TestCase):
@@ -267,7 +282,7 @@ class OverStdio(unittest.TestCase):
             {"open_model", "current_model", "list_diagrams", "get_function_tree",
              "get_diagram", "render_diagram", "render_diagram_svg_text",
              "rename_activity", "rename_flow", "add_activity", "add_arrow", "move_activity",
-             "delete_activity", "delete_arrow", "save_model"},
+             "delete_activity", "delete_arrow", "tidy_sheet", "tidy_labels", "save_model"},
         )
         self.assertFalse(opened.isError)
         data = json.loads(diagram.content[0].text)

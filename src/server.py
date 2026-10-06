@@ -378,11 +378,14 @@ def add_arrow(sheet: str, source: Dict[str, Any], target: Dict[str, Any],
     """Draw an arrow on a sheet - ``sheet`` is the number of the activity it decomposes ("A0",
     "A12"; "A-0" for the context diagram) or its id.
 
-    ``source``: {"activity": "A1"} - the box's output, leaving its right side - or
+    ``source``: {"activity": "A1"} - the box's output, leaving its right side -
     {"frame": "input" | "control" | "mechanism"} - coming in from outside the decomposed
-    activity. ``target``: {"activity": "A2", "role": "input" | "control" | "mechanism"}, or
-    {"frame": "output"} - leaving it. Give ``name`` for a new flow (a noun phrase) or ``flow``
-    (a stream id from get_diagram) to draw an existing one.
+    activity - or {"arrow": segment} - a branch forking off an arrow already on the sheet
+    (a segment id from get_diagram). ``target``: {"activity": "A2", "role": "input" |
+    "control" | "mechanism"}, or {"frame": "output"} - leaving it. Give ``name`` for a new
+    flow (a noun phrase) or ``flow`` (a stream id from get_diagram) to draw an existing one.
+    A branch carries the flow it forks from and shows no name of its own unless it is given
+    a name of its own (then it is a new flow - part of what the trunk carries).
 
     An end on the frame, or on a box that has its own decomposition, is joined to the same
     flow on the other level when that arrow is there and not yet continued (matched by flow,
@@ -432,6 +435,29 @@ def delete_arrow(segment: int) -> Dict[str, Any]:
     """
     _require()
     return _edited(_Open.editor.delete_arrow(int(segment)))
+
+
+@mcp.tool()
+def tidy_sheet(sheet: str) -> Dict[str, Any]:
+    """Lay out a sheet's arrows again - ``sheet`` is the number of the activity it decomposes
+    ("A0"; "A-0" for the context diagram) or its id. Each arrow is rerouted with the others
+    where they are, its ends free to slide along their sides, and the new route is kept only
+    if it is clearly better (fewer crossings, bends, lines on top of each other); pairs of
+    arrows that cross are tried the other way round. Then names in the way of something are
+    put back beside their arrows. Boxes stay where they are. Use it after a run of edits, or
+    on a sheet drawn by hand that looks tangled; render_diagram shows the result.
+    """
+    _require()
+    return _edited(_Open.editor.tidy_sheet(_sheet_id(sheet)))
+
+
+@mcp.tool()
+def tidy_labels(sheet: str) -> Dict[str, Any]:
+    """Move only the arrow names on a sheet that are in the way - on a box, a line or another
+    name, off the sheet, or lost far from their arrow - back beside their arrows. Routes and
+    boxes stay as they are."""
+    _require()
+    return _edited(_Open.editor.tidy_labels(_sheet_id(sheet)))
 
 
 @mcp.tool()

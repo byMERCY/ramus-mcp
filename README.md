@@ -65,10 +65,12 @@ tools, so it can be looked at before anything is written.
 | `rename_activity(activity, name)` | Rename a box |
 | `rename_flow(flow, name)` | Rename a flow — what an arrow carries, on every level |
 | `add_activity(parent, name, x?, y?, width?, height?)` | Add a box to a decomposition; it takes the next number, copies its neighbours' look, and without a position is placed down the IDEF0 diagonal clear of boxes, arrows and labels |
-| `add_arrow(sheet, source, target, name? / flow?)` | Draw an arrow: box output → box input, control or mechanism; frame → box; box → frame. The route is orthogonal and kept clear of boxes and other arrows; where each end sits on its side is chosen by trying several and keeping the cleanest route. An end on the frame, or on a decomposed box, is joined to the same flow on the other level when that arrow is there — keeping the levels balanced — and is otherwise left a tunnel. An end on a box with no decomposition yet gets the arrow-to-be of one, as Ramus does, so it comes down when the box is decomposed |
+| `add_arrow(sheet, source, target, name? / flow?)` | Draw an arrow: box output → box input, control or mechanism; frame → box; box → frame; or a branch forking off an arrow already on the sheet (`{"arrow": segment}`), cut into it the way Ramus cuts a fork. The route is orthogonal and kept clear of boxes and other arrows; where each end sits on its side is chosen by trying several and keeping the cleanest route. An end on the frame, or on a decomposed box, is joined to the same flow on the other level when that arrow is there — keeping the levels balanced — and is otherwise left a tunnel. An end on a box with no decomposition yet gets the arrow-to-be of one, as Ramus does, so it comes down when the box is decomposed |
 | `move_activity(activity, x?, y?, width?, height?)` | Move or resize a box; its arrows are routed again, an arrow it lands on is routed round it, and a name it covers is moved off |
 | `delete_activity(activity, with_decomposition?)` | Delete a box with the arrows that ended on it (and, if asked, everything under it); the boxes after it move up a number |
 | `delete_arrow(segment)` | Delete an arrow segment; as in Ramus, a piece left leading nowhere goes with it |
+| `tidy_sheet(sheet)` | Lay a sheet's arrows out again: each is rerouted and the new route kept only if clearly better, crossing pairs are tried the other way round, then names in the way are moved; boxes stay put |
+| `tidy_labels(sheet)` | Move only the arrow names that are in the way back beside their arrows |
 | `save_model(path?, overwrite?)` | Write the changes: to a new file (the original stays untouched), or over the opened one after copying it once to `<name>.backup.rsf` |
 
 Nothing is written until `save_model`, and `open_model` will not switch away from unsaved changes
@@ -91,7 +93,8 @@ folder).
 ## Status
 
 Eyes work: reading models and rendering diagrams with their arrows. Hands work for renaming, for
-adding, moving and deleting boxes and for drawing and deleting arrows; every change is written the
+adding, moving and deleting boxes, for drawing, forking and deleting arrows and for tidying a
+sheet's layout; every change is written the
 way Ramus writes it — a rewritten table is byte-for-byte what Ramus itself would produce — and was
 checked by opening the result in the Ramus engine. Checks of the IDEF0 rules are next.
 
