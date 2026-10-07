@@ -30,11 +30,13 @@ Segment = Tuple[Point, Point]
 MARGIN = 14.0  # how far a route keeps from a box; the usual length of the first and last pieces
 MIN_STUB = 8.0  # the first and last pieces are never shorter (the head is 8 long)
 BEND = 40.0  # a bend costs as much as this much extra length
+JOG = 30.0  # a short step between two bends - a dip round a corner - on top of the bends
+JOG_UNDER = 14.0  # ... a step shorter than this
 OFF_CENTRE = 0.05  # per unit a turn sits away from halfway between the ends - a tie-breaker
 CROSSING = 30.0  # crossing an existing arrow
 OVERLAP = 90.0  # running along one: this much for each piece that does ...
 OVERLAP_PER_UNIT = 3.0  # ... and this much per unit of length drawn on top of it
-THROUGH_LABEL = 45.0  # running through another arrow's name
+THROUGH_LABEL = 12.0  # running through another arrow's name - which can be moved off it
 NEAR = 16.0  # closer than this alongside another arrow reads as crowding, priced per unit of
 #              length from OVERLAP_PER_UNIT (as good as on top of it) down to nothing at NEAR
 ON_TOP = 2.0  # closer than this is drawn on top of it
@@ -110,7 +112,17 @@ def _line_cost(a: Point, b: Point, lines: Sequence[Segment]) -> float:
 
 def _label_cost(a: Point, b: Point, labels: Sequence[Rect]) -> float:
     """What drawing a-b costs in names it runs through."""
-    return THROUGH_LABEL * sum(1 for r in labels if _crosses_rect(a, b, r))
+    if not labels:
+        return 0.0
+    if a[1] == b[1]:  # a horizontal piece meets only the names its height runs through
+        y, x0, x1 = a[1], min(a[0], b[0]), max(a[0], b[0])
+        hits = sum(1 for rx, ry, rw, rh in labels
+                   if ry < y < ry + rh and max(x0, rx) < min(x1, rx + rw))
+    else:
+        x, y0, y1 = a[0], min(a[1], b[1]), max(a[1], b[1])
+        hits = sum(1 for rx, ry, rw, rh in labels
+                   if rx < x < rx + rw and max(y0, ry) < min(y1, ry + rh))
+    return THROUGH_LABEL * hits
 
 
 class Costs:
@@ -198,6 +210,23 @@ def simplify(points: Iterable[Point]) -> List[Point]:
     return out
 
 
+End = Tuple[Point, Point, float]  # a place a route may start or end: point, way, price
+
+
+class Found:
+    """What :func:`route_many` found: the route, and the start and end it took."""
+
+    def __init__(self, points: List[Point], start: End, end: End):
+        self.points = points
+        self.start = start
+        self.end = end
+
+    @property
+    def price(self) -> float:
+        """What the two ends it took cost, on top of the route itself."""
+        return self.start[2] + self.end[2]
+
+
 def route(start: Point, start_dir: Point, end: Point, end_dir: Point,
           obstacles: Sequence[Rect], bounds: Rect, lines: Sequence[Segment] = (),
           margin: float = MARGIN, labels: Sequence[Rect] = (),
@@ -217,15 +246,45 @@ def route(start: Point, start_dir: Point, end: Point, end_dir: Point,
     length from MIN_STUB up, so a route can turn in a gap between two boxes narrower than two
     margins; where nothing else decides it, the turn is made halfway between the ends.
     """
+    return route_many([(start, start_dir, 0.0)], [(end, end_dir, 0.0)], obstacles, bounds,
+                      lines, margin, labels, costs, extra).points
+
+
+def route_many(starts: Sequence[End], ends: Sequence[End], obstacles: Sequence[Rect],
+               bounds: Rect, lines: Sequence[Segment] = (), margin: float = MARGIN,
+               labels: Sequence[Rect] = (), costs: Optional[Costs] = None,
+               extra: Optional[Callable[[Point, Point], float]] = None) -> Found:
+    """The cheapest route from any of ``starts`` to any of ``ends`` - each a point, the way
+    a route leaves it (or arrives at it), and what taking it costs - in one search: the same
+    route :func:`route` finds for the best pair, without routing every pair on its own. The
+    graph carries the lines of every start and end, so no pair's route is missed.
+    """
     clearance = margin * 0.75
     blocked = [_blocked(r, clearance) for r in obstacles]
     bx, by, bw, bh = bounds
-    mid = ((start[0] + end[0]) / 2, (start[1] + end[1]) / 2)
+    start_points = {p for p, _, _ in starts}
+    ends = [e for e in ends if e[0] not in start_points]
+    if not starts or not ends:
+        raise ValueError("a route needs somewhere to start and somewhere else to end")
 
-    xs = {start[0], end[0], mid[0], start[0] + start_dir[0] * margin,
-          end[0] - end_dir[0] * margin, bx + margin, bx + bw - margin}
-    ys = {start[1], end[1], mid[1], start[1] + start_dir[1] * margin,
-          end[1] - end_dir[1] * margin, by + margin, by + bh - margin}
+    xs = {bx + margin, bx + bw - margin}
+    ys = {by + margin, by + bh - margin}
+    for p, d, _ in starts:
+        xs.update((p[0], p[0] + d[0] * margin))
+        ys.update((p[1], p[1] + d[1] * margin))
+    for p, d, _ in ends:
+        xs.update((p[0], p[0] - d[0] * margin))
+        ys.update((p[1], p[1] - d[1] * margin))
+
+    def nearest(p: Point, others: Sequence[End]) -> Point:
+        return min((o[0] for o in others), key=lambda q: abs(q[0] - p[0]) + abs(q[1] - p[1]))
+
+    # Halfway between the ends: where a turn goes when nothing else decides it - for every
+    # pair, so that whichever pair wins has its middle to turn in.
+    for p, _, _ in starts:
+        for q, _, _ in ends:
+            xs.add((p[0] + q[0]) / 2)
+            ys.add((p[1] + q[1]) / 2)
     for r in obstacles:
         xs.update((r[0] - margin, r[0] + r[2] + margin))
         ys.update((r[1] - margin, r[1] + r[3] + margin))
@@ -254,7 +313,8 @@ def route(start: Point, start_dir: Point, end: Point, end_dir: Point,
     col_spans = {x: [(r[1], r[1] + r[3]) for r in blocked if r[0] < x < r[0] + r[2]] for x in xs}
     xi = {x: i for i, x in enumerate(xs)}
     yi = {y: i for i, y in enumerate(ys)}
-    ends = {start, end}  # an end on the frame is a free point too, but joins only by its ray
+    # An end on a box or the frame is a free point too, but joins only by its ray.
+    terminals = start_points | {p for p, _, _ in ends}
 
     def free(p: Point) -> bool:
         return not any(lo < p[0] < hi for lo, hi in row_spans[p[1]])
@@ -265,7 +325,7 @@ def route(start: Point, start_dir: Point, end: Point, end_dir: Point,
         k += way
         while 0 <= k < len(coords):
             p = at(coords[k])
-            if p in ends:
+            if p in terminals:
                 k += way
                 continue
             if not free(p):
@@ -277,36 +337,48 @@ def route(start: Point, start_dir: Point, end: Point, end_dir: Point,
         return None
 
     # The ends sit on a box (inside its clearance), so they join the graph only by straight
-    # pieces along their own direction: out of the start, into the end. Such a piece may cross
+    # pieces along their own direction: out of a start, into an end. Such a piece may cross
     # the clearance of the box it starts or ends on, and no other.
     stub_cost: Dict[Tuple[Point, Point], float] = {}
 
-    def ray(origin: Point, direction: Point, mid_along: float) -> List[Point]:
+    def ray(origin: Point, direction: Point, toward: Point, outward: bool) -> List[Point]:
         others = [r for r in blocked if not _inside(origin, r)]
         if direction in (LEFT, RIGHT):
             line = [(x, origin[1]) for x in xs] if origin[1] in yi else []
         else:
             line = [(origin[0], y) for y in ys] if origin[0] in xi else []
+        mid_along = ((toward[0] - origin[0]) * direction[0]
+                     + (toward[1] - origin[1]) * direction[1]) / 2
+        ideal = mid_along if mid_along >= MIN_STUB else margin
         out = []
         for n in line:
             t = (n[0] - origin[0]) * direction[0] + (n[1] - origin[1]) * direction[1]
-            if t >= MIN_STUB and n not in ends and free(n) and not any(
+            if t >= MIN_STUB and n not in terminals and free(n) and not any(
                     _crosses_rect(origin, n, r) for r in others):
                 out.append(n)
-                ideal = mid_along if mid_along >= MIN_STUB else margin
-                stub_cost[(origin, n) if origin == start else (n, origin)] = \
-                    OFF_CENTRE * abs(t - ideal)
+                stub_cost[(origin, n) if outward else (n, origin)] = OFF_CENTRE * abs(t - ideal)
         return out
 
-    along_s = (mid[0] - start[0]) * start_dir[0] + (mid[1] - start[1]) * start_dir[1]
-    along_e = (end[0] - mid[0]) * end_dir[0] + (end[1] - mid[1]) * end_dir[1]
-    known: Dict[Point, List[Point]] = {start: ray(start, start_dir, along_s)}
-    into_end = set(ray(end, (-end_dir[0], -end_dir[1]), along_e))
-    straight = (start_dir == end_dir and _direction(start, end) == start_dir
-                if start != end and (start[0] == end[0] or start[1] == end[1]) else False)
-    if straight and not any(_crosses_rect(start, end, r) for r in blocked
-                            if not _inside(start, r) and not _inside(end, r)):
-        known[start].append(end)
+    known: Dict[Point, List[Point]] = {}
+    for p, d, _ in starts:
+        known.setdefault(p, []).extend(ray(p, d, nearest(p, ends), True))
+    into: Dict[Point, List[Point]] = {}
+    end_price: Dict[Point, float] = {}
+    end_of: Dict[Point, End] = {}
+    for e in ends:
+        p, d, price = e
+        if p in end_price and end_price[p] <= price:
+            continue
+        end_price[p], end_of[p] = price, e
+        for n in ray(p, (-d[0], -d[1]), nearest(p, starts), False):
+            into.setdefault(n, []).append(p)
+    for p, d, _ in starts:  # straight across, where a start and an end face each other
+        for q, qd, _ in ends:
+            if d == qd and p != q and (p[0] == q[0] or p[1] == q[1]) and \
+                    _direction(p, q) == d and not any(
+                        _crosses_rect(p, q, r) for r in blocked
+                        if not _inside(p, r) and not _inside(q, r)):
+                known[p].append(q)
 
     def neighbours(n: Point) -> List[Point]:
         out = known.get(n)
@@ -317,19 +389,24 @@ def route(start: Point, start_dir: Point, end: Point, end_dir: Point,
                                step(xs, xi[x], 1, row_spans[y], row),
                                step(ys, yi[y], -1, col_spans[x], col),
                                step(ys, yi[y], 1, col_spans[x], col)) if p is not None]
-            if n in into_end:
-                out.append(end)
+            out.extend(into.get(n, ()))
             known[n] = out
         return out
 
-    best = _cheapest(start, start_dir, end, end_dir, neighbours, stub_cost, costs, extra)
+    goals = [(p, d, end_price[p]) for p, (_, d, _) in end_of.items()]
+    best = _cheapest(starts, goals, neighbours, stub_cost, costs, extra)
     if best is None:
-        # Nowhere clear to go: an elbow, the honest fallback.
-        s1 = (start[0] + start_dir[0] * margin, start[1] + start_dir[1] * margin)
-        e1 = (end[0] - end_dir[0] * margin, end[1] - end_dir[1] * margin)
-        middle = [(e1[0], s1[1])] if start_dir in (LEFT, RIGHT) else [(s1[0], e1[1])]
-        best = [start, s1] + middle + [e1, end]
-    return simplify(best)
+        # Nowhere clear to go: an elbow between the likeliest pair, the honest fallback.
+        s, e = min(((s, e) for s in starts for e in ends),
+                   key=lambda se: least_cost(se[0][0], se[0][1], se[1][0], se[1][1])
+                   + se[0][2] + se[1][2])
+        (sp, sd, _), (ep, ed, _) = s, e
+        s1 = (sp[0] + sd[0] * margin, sp[1] + sd[1] * margin)
+        e1 = (ep[0] - ed[0] * margin, ep[1] - ed[1] * margin)
+        middle = [(e1[0], s1[1])] if sd in (LEFT, RIGHT) else [(s1[0], e1[1])]
+        return Found(simplify([sp, s1] + middle + [e1, ep]), s, e)
+    path, first = best
+    return Found(simplify(path), first, end_of[path[-1]])
 
 
 def least_cost(node: Point, heading: Point, end: Point, end_dir: Point) -> float:
@@ -359,43 +436,102 @@ def _corridors(levels: Sequence[float], edges: Sequence[float], lo: float,
             if v - u > 2 * ON_TOP and (u in lines or v in lines)}
 
 
-def _cheapest(start: Point, start_dir: Point, end: Point, end_dir: Point,
+def _cheapest(starts: Sequence[End], goals: Sequence[End],
               neighbours: Callable[[Point], List[Point]],
               stub_cost: Dict[Tuple[Point, Point], float],
               costs: Costs,
-              extra: Optional[Callable[[Point, Point], float]] = None) -> Optional[List[Point]]:
-    """A* over (node, heading), so bends can be priced. The estimate of what is left - the
-    Manhattan distance to the end, plus a bend for each turn there is no arriving without -
-    never exceeds the true price (every piece costs at least its length, every turn a BEND),
-    so the route found is still the cheapest."""
-    start_state = (start, start_dir)
-    dist = {start_state: 0.0}
+              extra: Optional[Callable[[Point, Point], float]] = None):
+    """A* over (node, heading), so bends can be priced, from every start at once (each at its
+    own price) to whichever goal is cheapest (its price paid on arrival). The estimate of what
+    is left - for the cheapest goal, the Manhattan distance to it, plus a bend for each turn
+    there is no arriving without, plus its price - never exceeds the true price (every piece
+    costs at least its length, every turn a BEND), so the route found is still the cheapest.
+    Returns the route's points and the start it left from, or None."""
+    goal_price = {p: price for p, _, price in goals}
+
+    if len(goals) == 1:
+        (gp, gd, gprice), = goals
+
+        def estimate(node: Point, heading: Point) -> float:
+            return least_cost(node, heading, gp, gd) + gprice
+    else:
+        seen: Dict[Tuple[Point, Point], float] = {}  # a state is reached again and again
+        flat = [(p[0], p[1], d[0], d[1], price) for p, d, price in goals]
+        two_bends = 2 * BEND
+
+        def estimate(node: Point, heading: Point) -> float:
+            # least_cost to each goal, plus its price - written out, as this runs for every
+            # state the search reaches
+            key = (node, heading)
+            value = seen.get(key)
+            if value is not None:
+                return value
+            nx, ny = node
+            hx, hy = heading
+            value = float("inf")
+            for gx, gy, ex, ey, price in flat:
+                dx, dy = gx - nx, gy - ny
+                left = (dx if dx >= 0 else -dx) + (dy if dy >= 0 else -dy)
+                if left == 0.0:
+                    cost = 0.0
+                elif hx == ex and hy == ey:
+                    on_line = dy == 0.0 if ey == 0.0 else dx == 0.0
+                    cost = left if on_line and dx * ex + dy * ey > 0 else left + two_bends
+                elif hx == -ex and hy == -ey:
+                    cost = left + two_bends
+                else:
+                    cost = left + BEND
+                cost += price
+                if cost < value:
+                    value = cost
+            seen[key] = value
+            return value
+
+    dist: Dict[Tuple[Point, Point], float] = {}
     came: Dict[Tuple[Point, Point], Tuple[Point, Point]] = {}
-    heap = [(least_cost(start, start_dir, end, end_dir), 0, 0.0, start, start_dir)]
-    counter = 1
+    origin: Dict[Tuple[Point, Point], End] = {}
+    heap = []
+    counter = 0
+    for s in starts:
+        p, d, price = s
+        state = (p, d)
+        if price < dist.get(state, float("inf")):
+            dist[state] = price
+            origin[state] = s
+            heapq.heappush(heap, (price + estimate(p, d), counter, price, p, d))
+            counter += 1
     goal_state = None
     while heap:
         _, _, cost, node, heading = heapq.heappop(heap)
         if cost > dist.get((node, heading), float("inf")):
             continue
-        if node == end:
+        if node in goal_price and (node, heading) not in origin:
             goal_state = (node, heading)
             break
+        # Turning here after a short step that itself began with a turn makes a jog.
+        jogged = False
+        before = came.get((node, heading))
+        if before is not None and before[1] != heading and \
+                abs(node[0] - before[0][0]) + abs(node[1] - before[0][1]) < JOG_UNDER:
+            jogged = True
         for nxt in neighbours(node):
             d = _direction(node, nxt)
             if d == (-heading[0], -heading[1]):
                 continue  # no doubling back on itself
             step = abs(nxt[0] - node[0]) + abs(nxt[1] - node[1])
             extra_cost = BEND if d != heading else 0.0
+            if jogged and d != heading:
+                extra_cost += JOG
             extra_cost += stub_cost.get((node, nxt), 0.0)
             if extra is not None:
                 extra_cost += extra(node, nxt)
+            if nxt in goal_price:
+                extra_cost += goal_price[nxt]
             new = cost + step + extra_cost + costs.piece(node, nxt)
             if new < dist.get((nxt, d), float("inf")):
                 dist[(nxt, d)] = new
                 came[(nxt, d)] = (node, heading)
-                heapq.heappush(heap, (new + least_cost(nxt, d, end, end_dir), counter,
-                                      new, nxt, d))
+                heapq.heappush(heap, (new + estimate(nxt, d), counter, new, nxt, d))
                 counter += 1
     if goal_state is None:
         return None
@@ -404,7 +540,7 @@ def _cheapest(start: Point, start_dir: Point, end: Point, end_dir: Point,
     while state in came:
         state = came[state]
         path.append(state[0])
-    return list(reversed(path))
+    return list(reversed(path)), origin[state]
 
 
 def attach(box: Rect, side: int, taken: Sequence[float],

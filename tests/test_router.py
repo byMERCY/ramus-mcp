@@ -119,6 +119,42 @@ class Routing(unittest.TestCase):
                          [(0, 0), (10, 0), (10, 5)])
 
 
+class ManyEnds(unittest.TestCase):
+    """One search over every start and end does at least as well as routing each pair."""
+
+    def test_the_best_pair_is_found_in_one_search(self):
+        import random
+        rnd = random.Random(7)
+        for trial in range(12):
+            boxes = []
+            for i in range(4):
+                boxes.append((80.0 + 150 * i + rnd.uniform(-10, 10),
+                              60.0 + 80 * i + rnd.uniform(-10, 10), 100.0, 50.0))
+            a, b = boxes[0], boxes[-1]
+            starts = [((a[0] + a[2], a[1] + f * a[3]), rt.RIGHT, rnd.uniform(0, 20))
+                      for f in (0.25, 0.5, 0.75)]
+            ends = [((b[0], b[1] + f * b[3]), rt.RIGHT, rnd.uniform(0, 20))
+                    for f in (0.3, 0.5, 0.7)]
+            lines = [((300.0, 20.0), (300.0, 400.0)), ((40.0, 200.0), (700.0, 200.0))]
+            costs = rt.Costs(lines)
+            found = rt.route_many(starts, ends, boxes, SHEET, lines, costs=costs)
+            many = rt.route_cost(found.points, costs=costs) + found.price
+            pairs = min(rt.route_cost(rt.route(sp, sd, ep, ed, boxes, SHEET, lines,
+                                                costs=costs), costs=costs) + s_price + e_price
+                        for sp, sd, s_price in starts for ep, ed, e_price in ends)
+            self.assertLessEqual(many, pairs + 1.0, trial)
+            self.assertTrue(_orthogonal(found.points))
+            for r in boxes[1:-1]:
+                self.assertFalse(_through(found.points, r))
+
+    def test_a_single_pair_is_routed_as_before(self):
+        box = (120.0, 30.0, 60.0, 40.0)
+        one = rt.route((60, 50), rt.RIGHT, (300, 50), rt.RIGHT, [box], SHEET)
+        many = rt.route_many([((60, 50), rt.RIGHT, 0.0)], [((300, 50), rt.RIGHT, 0.0)], [box],
+                             SHEET)
+        self.assertEqual(one, many.points)
+
+
 class Attaching(unittest.TestCase):
     BOX = (100.0, 100.0, 120.0, 60.0)
 

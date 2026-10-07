@@ -97,6 +97,26 @@ def format_cell(value: Any, sql_type: str) -> Optional[str]:
 
 # ------------------------------------------------------------------------------ tables
 
+def _as_read(value: str) -> Optional[str]:
+    """A cell as an XML parser reads it back once written: empty is None, CR LF and a lone
+    CR are LF."""
+    if value == "":
+        return None
+    if "\r" in value:
+        value = value.replace("\r\n", "\n").replace("\r", "\n")
+    return value
+
+
+def _reader_rows(raw: bytes) -> List[Dict[str, Optional[str]]]:
+    """A table dump parsed the way the reader parses it."""
+    root = ET.fromstring(raw)
+    fields = root.find("fields")
+    columns = {fe.get("id"): fe.get("name") for fe in (fields if fields is not None else [])}
+    data = root.find("data")
+    return [{columns.get(c.get("id"), c.get("id")): c.text for c in row.findall("f")}
+            for row in (data if data is not None else [])]
+
+
 class Table:
     """One parsed table dump. Rows are dicts of raw cell text and may be changed freely; mark
     the table changed (``touch``) or use the helpers, which do it for you."""
@@ -250,6 +270,7 @@ class RsfDocument:
         self._dropped = False
         self._next_element: Optional[int] = None
         self._handed_out: Dict[str, int] = {}
+        self._parsed: Dict[str, List[Dict[str, Optional[str]]]] = {}  # untouched tables
 
     # ------------------------------------------------------------ members
 
@@ -291,6 +312,24 @@ class RsfDocument:
     def changed(self) -> bool:
         return self._sequences_dirty or self._dropped or \
             any(t.dirty for t in self._tables.values())
+
+    # ------------------------------------------------------- reading it back
+
+    def reader_rows(self, name: str) -> List[Dict[str, Optional[str]]]:
+        """Table ``name`` as the reader (ramus_rsf) would get it from the file written now -
+        without writing it: an empty cell is None, a line break inside a cell is LF (an XML
+        parser folds CR LF and a lone CR into LF). A table never changed is parsed once and
+        kept."""
+        member = "data/" + name + ".xml"
+        if member not in self._members:
+            return []
+        table = self._tables.get(name)
+        if table is None or not table.dirty:
+            cached = self._parsed.get(name)
+            if cached is None:
+                cached = self._parsed[name] = _reader_rows(self._members[member])
+            return cached
+        return [{k: _as_read(v) for k, v in row.items()} for row in table.rows]
 
     # ------------------------------------------------------- trying a change
 

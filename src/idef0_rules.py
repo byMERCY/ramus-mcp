@@ -252,7 +252,8 @@ _OBJECT = {"external": "external entity", "store": "data store", "role": "role"}
 def _dfd_box_rules(d: Diagram, box: Activity) -> List[Finding]:
     out = []
     what = _OBJECT.get(box.kind, "process")
-    label = f"{box.number} «{box.name.strip()}»" if box.number else f"{what} «{box.name.strip()}»"
+    label = f"{box.number} «{box.name.strip()}»" if box.number else \
+        f"{what} «{box.name.strip()}»"
     ref = box.number or str(box.element_id)
     if not box.name.strip():
         out.append(Finding("unnamed_activity", ERROR, d.node,

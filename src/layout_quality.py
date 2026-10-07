@@ -4,7 +4,8 @@ The IDEF0 rules (:mod:`idef0_rules`) say whether a model is *right*; this says w
 *reads well* - the things a person who draws IDEF0 by hand avoids and a reviewer marks:
 
 * arrows that cross, or run on top of or tight beside one another;
-* bends, and routes that wander further than their two ends need (an S-loop, a long way round);
+* bends, and routes that wander further than their two ends need (an S-loop, a long way round),
+  or step aside for a moment - a short piece between two turns, a jog round a corner;
 * an arrow end hugging a corner of its box, or sitting on the box's number; two ends crowded
   together on one side;
 * feedback drawn against the convention - into a control "up and over", into an input or a
@@ -47,6 +48,7 @@ WEIGHTS: Dict[str, float] = {
     "number_end": 12.0,
     "crowded_ends": 8.0,
     "detour": 6.0,  # a route going a long way round, on top of DETOUR_PER_UNIT
+    "jog": 8.0,  # a short piece between two turns, inside a route
     "feedback_side": 15.0,
     "label_far": 10.0,
     "label_ambiguous": 6.0,
@@ -66,6 +68,7 @@ CLOSE = 6.0  # ... closer than this, tight beside each other
 CLOSE_RUN = 10.0  # ... for at least this long
 STUB = 8.0  # the least a route runs straight out of a box or the frame (the head is 8 long)
 DETOUR_NOTED = 40.0  # a detour longer than this is a fault of its own
+JOG = 14.0  # a piece shorter than this between two turns is a jog
 END_SPACING = 10.0  # two ends on one side nearer than this are crowded
 LABEL_NEAR = 24.0  # a name further than this from its route has lost touch with it ...
 TILDE_NEAR = 64.0  # ... unless a zig-zag ties it back
@@ -79,6 +82,7 @@ FIXES: Dict[str, str] = {
     "number_end": "tidy_sheet",
     "crowded_ends": "tidy_sheet",
     "detour": "tidy_sheet",
+    "jog": "tidy_sheet",
     "feedback_side": "tidy_sheet",
     "label_far": "tidy_labels",
     "label_ambiguous": "tidy_labels",
@@ -338,6 +342,10 @@ class SheetGeometry:
             if detour > DETOUR_NOTED:
                 faults.append(Fault("detour", WEIGHTS["detour"], (a.sector,), at=pts[0],
                                     detail=f"{round(detour)} longer than it needs to be"))
+            for p, q in pieces[1:-1]:
+                if abs(q[0] - p[0]) + abs(q[1] - p[1]) < JOG:
+                    faults.append(Fault("jog", WEIGHTS["jog"], (a.sector,), at=p,
+                                        detail="a short step between two turns"))
         for end, p in ((a.start, pts[0]), (a.end, pts[-1])):
             box = self.boxes.get(end.activity_id) if end.kind == "activity" else None
             if box is not None and end.side:

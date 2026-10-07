@@ -108,8 +108,9 @@ class ModelEditor:
         return self.doc.changed
 
     def snapshot(self) -> RsfModel:
-        """A reader over the model as it is now, unsaved changes included."""
-        return RsfModel(io.BytesIO(self.doc.to_bytes()))
+        """A reader over the model as it is now, unsaved changes included - read straight
+        from the tables in memory, nothing written out."""
+        return RsfModel(self.doc)
 
     # ------------------------------------------------------------------ lookups
 
@@ -1124,25 +1125,35 @@ class ModelEditor:
         before = _Layout(sheet).geometry().assess()
         saved = self.doc.checkpoint()
         rerouted: List[int] = []
-
-        def note(sectors) -> None:
-            rerouted.extend(s for s in sectors if s not in rerouted)
-
-        note(self._redraw_parts(sheet_id))
-        note(self._reroute(sheet_id, passes))
-        note(self._spread_ends(sheet_id))
-        note(self._uncross(sheet_id))
-        result = self.tidy_labels(sheet_id)
+        labels_moved: List[int] = []
+        best = before.score
+        # Each step is judged by the whole sheet, its names put back beside the routes it
+        # moved: a step that leaves the sheet no better is taken back.
+        for step in (lambda: self._redraw_parts(sheet_id),
+                     lambda: self._reroute(sheet_id, passes),
+                     lambda: self._spread_ends(sheet_id),
+                     lambda: self._uncross(sheet_id)):
+            state = self.doc.checkpoint()
+            moved = step()
+            names = self.tidy_labels(sheet_id)["labels_moved"]
+            if not moved and not names:
+                continue
+            score = _Layout(self._sheet(sheet_id)).geometry().assess().score
+            if score < best - 0.01:
+                best = score
+                rerouted.extend(s for s in moved if s not in rerouted)
+                labels_moved.extend(s for s in names if s not in labels_moved)
+            else:
+                self.doc.restore(state)
         after = _Layout(self._sheet(sheet_id)).geometry().assess()
-        if after.score >= before.score and (rerouted or result["labels_moved"]):
+        if after.score >= before.score:
             self.doc.restore(saved)
             return {"sheet": sheet.node, "rerouted": [], "labels_moved": [],
                     "layout": {"before": before.score, "after": before.score},
                     "note": "Nothing found that reads better; the sheet is as it was."}
-        result["rerouted"] = rerouted
-        result["layout"] = {"before": before.score, "after": after.score,
-                            "faults_left": after.counts()}
-        return result
+        return {"sheet": sheet.node, "rerouted": rerouted, "labels_moved": labels_moved,
+                "layout": {"before": before.score, "after": after.score,
+                           "faults_left": after.counts()}}
 
     # ---- forks and joins drawn again as a whole
 
@@ -1510,7 +1521,8 @@ class ModelEditor:
         sides: Dict[Tuple[int, str], List[Tuple[int, int]]] = {}
         for s, a in arrows.items():
             for which, e in ((0, a.start), (1, a.end)):
-                if e.kind == "activity" and e.side in _SIDE_NUMBERS and e.activity_id in layout.boxes:
+                if e.kind == "activity" and e.side in _SIDE_NUMBERS \
+                        and e.activity_id in layout.boxes:
                     sides.setdefault((e.activity_id, e.side), []).append((s, which))
         changed: List[int] = []
         for (box_id, side_name), ends in sorted(sides.items(), key=lambda kv: (-len(kv[1]), kv[0])):
@@ -1648,7 +1660,8 @@ class ModelEditor:
         values: Dict[str, object] = {}
         box = layout.labels.get(arrow.sector_id)
         tilde = arrow.label.tilde_pos is not None
-        moved = force or box is None or             not layout.label_fits(box, points, arrow.sector_id, tilde)
+        moved = force or box is None or \
+            not layout.label_fits(box, points, arrow.sector_id, tilde)
         if moved:
             box, far = layout.place_label(arrow.name, arrow.font_size, points,
                                           exclude=arrow.sector_id)
@@ -2606,9 +2619,9 @@ class _Layout:
             self.crowding(start, points[0], exclude) + self.crowding(end, points[-1], exclude)
 
     def plan_with_cost(self, start: _Anchor, end: _Anchor, exclude: Optional[int] = None):
-        """The best route between two anchors, and its cost: every pair of the places worth
-        trying at the two ends is routed, and the cheapest - its length, bends, crossings and
-        crowding, plus the price of crowding an end in among others - wins."""
+        """The best route between two anchors, and its cost: of every pair of the places
+        worth trying at the two ends, the route that costs least - its length, bends, crossings
+        and crowding, plus the price of each end's place - found in one search over them all."""
         lines = self.lines(exclude)
         names = self.names(exclude)
         costs = rt.Costs(lines, names)
@@ -2616,27 +2629,18 @@ class _Layout:
         extra = self.feedback(start, end)
         s_base = [p for p, _ in self._options(start, end, False, [], exclude)]
         e_base = [p for p, _ in self._options(end, start, True, [], exclude)]
-        # Cheapest-looking pairs first; once even the least a pair could cost is no better than
-        # the best route found, neither it nor any after it can win.
-        pairs = sorted(
-            ((rt.least_cost(sp, start.direction, ep, end.direction) + s_price + e_price, n, sp, ep,
-              s_price + e_price)
-             for n, ((sp, s_price), (ep, e_price)) in enumerate(
-                 (s, e) for s in self._options(start, end, False, e_base, exclude)
-                 for e in self._options(end, start, True, s_base, exclude))
-             if sp != ep))
-        best = None
-        for least, _, sp, ep, price in pairs:
-            if best is not None and least >= best[0]:
-                break
-            pts = rt.route(sp, start.direction, ep, end.direction, boxes, self.frame, lines,
-                           labels=names, costs=costs, extra=extra)
-            cost = rt.route_cost(pts, costs=costs, extra=extra) + price +                 rt.THROUGH_BOX * rt.through_boxes(pts, boxes)
-            if best is None or cost < best[0]:
-                best = (cost, pts)
-        if best is None:
+        starts = [(p, start.direction, price)
+                  for p, price in self._options(start, end, False, e_base, exclude)]
+        ends = [(p, end.direction, price)
+                for p, price in self._options(end, start, True, s_base, exclude)]
+        if not ends or all(e[0] in {s[0] for s in starts} for e in ends):
             raise EditError("There is no way to draw that arrow: its two ends meet.")
-        return best[1], best[0]
+        found = rt.route_many(starts, ends, boxes, self.frame, lines, labels=names,
+                              costs=costs, extra=extra)
+        pts = found.points
+        cost = rt.route_cost(pts, costs=costs, extra=extra) + found.price + \
+            rt.THROUGH_BOX * rt.through_boxes(pts, boxes)
+        return pts, cost
 
     def feedback(self, start: _Anchor, end: _Anchor):
         """The router's ``extra`` for an output fed back into a box further left - priced to
@@ -2679,7 +2683,9 @@ class _Layout:
                                       corner=end.corner, centre=end.centre, avoid=end.avoid)
                     if round(c, 3) == want]
 
-        tries = []
+        starts = []  # every place on the trunk worth forking at, each way off it
+        forked_at = {}
+        ends = {e: price for e, price in targets}
         pieces = [(trunk, k, p, q) for trunk in trunks
                   for route in [self.routes.get(trunk.sector_id) or list(trunk.points)]
                   for k, (p, q) in enumerate(zip(route, route[1:]))]
@@ -2690,30 +2696,33 @@ class _Layout:
             if hi - lo < 2 * _FORK_CLEAR:
                 continue
             spots = {(lo + hi) / 2, lo + _FORK_CLEAR, hi - _FORK_CLEAR}
+            # Level with the end, where the branch runs straight into it - only if it arrives
+            # the way the branch leaves the trunk; level with an end it must turn into, the
+            # branch would have to go past it and come back. A turn's length before it, always.
+            straight_in = (arrive[0] == 0.0) == horizontal
             for e, _ in targets:
-                spots.add(e[along])
+                if straight_in:
+                    spots.add(e[along])
                 spots.add(e[along] - arrive[along] * _APPROACH)
             spots = {min(hi - _FORK_CLEAR, max(lo + _FORK_CLEAR, c)) for c in spots}
             ways = (rt.UP, rt.DOWN) if horizontal else (rt.LEFT, rt.RIGHT)
             for c in sorted(spots):
                 fork = (c, p[1]) if horizontal else (p[0], c)
                 for way in ways:
-                    for e, price in targets + level_with(fork):
-                        least = rt.least_cost(fork, way, e, arrive) + price
-                        tries.append((least, len(tries), trunk, k, fork, way, e, price))
-        best = None
-        for least, _, trunk, k, fork, way, e, price in sorted(tries, key=lambda t: t[:2]):
-            if best is not None and least >= best[0]:
-                break  # nothing after this can be cheaper than what was found
-            pts = rt.route(fork, way, e, arrive, boxes, self.frame, lines, labels=names,
-                           costs=costs)
-            cost = rt.route_cost(pts, costs=costs) + price +                 rt.THROUGH_BOX * rt.through_boxes(pts, boxes)
-            if best is None or cost < best[0]:
-                best = (cost, trunk, fork, k, pts[::-1] if reverse else pts)
-        if best is None:
+                    if (fork, way) not in forked_at:
+                        forked_at[(fork, way)] = (trunk, k)
+                        starts.append((fork, way, 0.0))
+                for e, price in level_with(fork):
+                    ends[e] = min(price, ends.get(e, price))
+        if not starts:
             raise EditError(f"Arrow segment {trunks[0].sector_id} has no straight piece long "
                             f"enough to {'join' if reverse else 'fork from'}.")
-        return best[1:]
+        # Every fork and every place at the other end, in one search.
+        found = rt.route_many(starts, [(e, arrive, price) for e, price in ends.items()], boxes,
+                              self.frame, lines, labels=names, costs=costs)
+        pts = found.points
+        trunk, k = forked_at[(found.start[0], found.start[1])]
+        return trunk, found.start[0], k, pts[::-1] if reverse else pts
 
     def place_label(self, text: str, size: float, points, exclude: Optional[int] = None):
         labels = [r for s, r in self.labels.items() if s != exclude] + self.texts

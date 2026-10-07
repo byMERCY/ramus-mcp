@@ -239,14 +239,17 @@ class RsfModel:
     """A loaded .rsf file, read lazily table by table."""
 
     def __init__(self, path):
-        """``path`` is a file name or a binary file object - the editor hands an in-memory copy
-        of a file with unsaved changes."""
-        self._zip = zipfile.ZipFile(path)
+        """``path`` is a file name or a binary file object - or a source of tables already in
+        memory (anything with ``reader_rows(name)``, as the editor's document has), which is
+        how the editor shows a file with unsaved changes without writing it out."""
+        self._source = path if hasattr(path, "reader_rows") else None
+        self._zip = None if self._source is not None else zipfile.ZipFile(path)
         self._cache: Dict[str, List[Dict[str, Optional[str]]]] = {}
         self._memo: Dict[str, object] = {}
 
     def close(self) -> None:
-        self._zip.close()
+        if self._zip is not None:
+            self._zip.close()
 
     def __enter__(self) -> "RsfModel":
         return self
@@ -259,6 +262,9 @@ class RsfModel:
     def table(self, name: str) -> List[Dict[str, Optional[str]]]:
         """Rows of ``data/<name>.xml``; an empty list if that dump is not in the file."""
         if name not in self._cache:
+            if self._source is not None:
+                self._cache[name] = self._source.reader_rows(name)
+                return self._cache[name]
             member = "data/" + name + ".xml"
             try:
                 self._cache[name] = _parse_table(self._zip.read(member))

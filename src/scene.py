@@ -329,7 +329,8 @@ def _box(a: Activity, notation: str = "idef0") -> List[Item]:
             items.append(Line([(x + DFD_LEAF_MARK, y), (x, y + DFD_LEAF_MARK)], ink, 1.0))
         # A process shows its place among the processes on its sheet: the last digits of its
         # number - and the top one, A0, is the first (and only) on the context diagram.
-        label = "1" if a.number == "A0" else             a.number[len(a.number.rstrip("0123456789")):] if a.number else ""
+        label = "1" if a.number == "A0" else \
+            a.number[len(a.number.rstrip("0123456789")):] if a.number else ""
         _name_lines(items, a.name, x, y, w, h, size, ink, NUMBER_SIZE if label else 0.0)
         if label:
             items.append(Text(x + w - 4.0, y + h - 3.0, label, NUMBER_SIZE, NUMBER_COLOR, "end"))
