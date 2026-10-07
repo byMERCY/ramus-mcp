@@ -60,6 +60,7 @@ class Rect:
     stroke: Optional[str] = None
     stroke_width: float = 1.0
     dash: Dash = None
+    radius: float = 0.0  # rounded corners, as a data flow diagram's process has them
 
 
 @dataclass
@@ -275,25 +276,88 @@ def _point_at(points: List[Point], fraction: float) -> Point:
 # ----------------------------------------------------------------------------------- parts
 
 
-def _box(a: Activity) -> List[Item]:
-    ink = a.color or INK
-    items: List[Item] = [Rect(a.x, a.y, a.width, a.height, a.fill or "#ffffff", ink, BOX_STROKE)]
-    size = a.font_size
+# Shapes on a data flow diagram, as Ramus draws them.
+DFD_RADIUS = 10.0  # a process's rounded corners
+ROLE_RADIUS = 2.0  # a DFDS role's
+STORE_LEFT = 20.0  # the compartment at the left of a data store, for its code
+LEAF_MARK = 4.0  # the stroke across the top corner of an activity with no decomposition ...
+DFD_LEAF_MARK = 15.0  # ... of a process on a data flow diagram (across its rounded corner)
+SMALL_TEXT = 0.8  # the second part of a DFDS name is written this much smaller
+
+
+def _name_lines(items: List[Item], text: str, x: float, y: float, w: float, h: float,
+                size: float, ink: str, reserved: float = 0.0) -> None:
+    """A name wrapped to a box ``w`` wide and centred in it, above a ``reserved`` strip."""
     line_h = size * 1.2
-    lines = wrap(a.name, max(a.width - 10.0, size), size)
-    # Keep the strip along the bottom for the node number, so a long name does not run
-    # into it; the name is centred in what is left.
-    reserved = NUMBER_SIZE if a.number else 0.0
-    top = a.y + (a.height - reserved - len(lines) * line_h) / 2.0 + 1.0
+    lines = wrap(text, max(w - 10.0, size), size)
+    top = y + (h - reserved - len(lines) * line_h) / 2.0 + 1.0
     for i, line in enumerate(lines):
-        items.append(
-            Text(a.x + a.width / 2.0, top + i * line_h + BASELINE * size + 0.1 * size,
-                 line, size, ink)
-        )
+        items.append(Text(x + w / 2.0, top + i * line_h + BASELINE * size + 0.1 * size,
+                          line, size, ink))
+
+
+def _box(a: Activity, notation: str = "idef0") -> List[Item]:
+    """One box in the shape its sheet's notation gives it: an IDEF0 activity a rectangle with
+    its node number; on a data flow diagram a process with rounded corners and its number,
+    an external entity with a second line along its top and left, a data store open at the
+    right with a compartment at the left; on a DFDS diagram an activity with its name over
+    the smaller second part of it, and a role as a small rounded tag. An activity with no
+    decomposition of its own has a short stroke across a top corner, as Ramus marks it."""
+    ink = a.color or INK
+    fill = a.fill or "#ffffff"
+    x, y, w, h = a.x, a.y, a.width, a.height
+    size = a.font_size
+    items: List[Item] = []
+    if a.kind == "external":
+        items.append(Rect(x, y, w, h, fill, ink, BOX_STROKE))
+        items.append(Line([(x + 2.0, y + h), (x + 2.0, y + 2.0), (x + w, y + 2.0)], ink, 1.0))
+        _name_lines(items, a.name, x + 2.0, y + 2.0, w - 2.0, h - 2.0, size, ink)
+        return items
+    if a.kind == "store":
+        items.append(Rect(x, y, w, h, fill))
+        items.append(Line([(x + w, y), (x, y), (x, y + h), (x + w, y + h)], ink, BOX_STROKE))
+        items.append(Line([(x + STORE_LEFT, y), (x + STORE_LEFT, y + h)], ink, 1.0))
+        _name_lines(items, a.name, x + STORE_LEFT, y, w - STORE_LEFT, h, size, ink)
+        return items
+    if a.kind == "role":
+        items.append(Rect(x, y, w, h, fill, ink, 1.0, radius=ROLE_RADIUS))
+        _name_lines(items, a.name, x, y, w, h, size, ink)
+        return items
+    if notation == "dfd":
+        items.append(Rect(x, y, w, h, fill, ink, BOX_STROKE, radius=DFD_RADIUS))
+        if not a.decomposed:
+            items.append(Line([(x + DFD_LEAF_MARK, y), (x, y + DFD_LEAF_MARK)], ink, 1.0))
+        # A process shows its place among the processes on its sheet: the last digits of its
+        # number - and the top one, A0, is the first (and only) on the context diagram.
+        label = "1" if a.number == "A0" else             a.number[len(a.number.rstrip("0123456789")):] if a.number else ""
+        _name_lines(items, a.name, x, y, w, h, size, ink, NUMBER_SIZE if label else 0.0)
+        if label:
+            items.append(Text(x + w - 4.0, y + h - 3.0, label, NUMBER_SIZE, NUMBER_COLOR, "end"))
+        return items
+    items.append(Rect(x, y, w, h, fill, ink, BOX_STROKE))
+    if notation == "dfds":
+        if not a.decomposed:
+            items.append(Line([(x + w - LEAF_MARK, y), (x + w, y + LEAF_MARK)], ink, 1.0))
+        # The name along the top - the bottom of the box is where its roles stand.
+        small = size * SMALL_TEXT
+        lines = wrap(a.name, max(w - 10.0, size), size)
+        below = wrap(a.long_name, max(w - 10.0, small), small) if a.long_name else []
+        top = y + 2.0
+        for i, line in enumerate(lines):
+            items.append(Text(x + w / 2.0, top + i * size * 1.2 + BASELINE * size, line, size,
+                              ink))
+        if below:
+            rule = top + len(lines) * size * 1.2 + 2.0
+            items.append(Line([(x, rule), (x + w, rule)], ink, 0.8, (1.0, 2.0)))
+            for i, line in enumerate(below):
+                items.append(Text(x + 4.0, rule + 2.0 + i * small * 1.2 + BASELINE * small,
+                                  line, small, ink, "start"))
+        return items
+    if not a.decomposed:
+        items.append(Line([(x + LEAF_MARK, y), (x, y + LEAF_MARK)], ink, 1.0))
+    _name_lines(items, a.name, x, y, w, h, size, ink, NUMBER_SIZE if a.number else 0.0)
     if a.number:
-        items.append(
-            Text(a.x + a.width - 3.0, a.y + a.height - 3.0, a.number, NUMBER_SIZE, NUMBER_COLOR, "end")
-        )
+        items.append(Text(x + w - 3.0, y + h - 3.0, a.number, NUMBER_SIZE, NUMBER_COLOR, "end"))
     return items
 
 
@@ -355,9 +419,10 @@ def _arrow(arrow: Arrow) -> List[Item]:
     return items
 
 
-def _label(arrow: Arrow) -> List[Item]:
+def _label(arrow: Arrow, notation: str = "idef0") -> List[Item]:
     """The arrow's name, centred in the box the file gives it, and the zig-zag that ties it
-    to the line."""
+    to the line. On a DFDS diagram the name is a card: framed, its lower right corner turned
+    down, as Ramus draws it there."""
     lb = arrow.label
     if lb is None or not arrow.name or not arrow.has_route:
         return []
@@ -368,7 +433,12 @@ def _label(arrow: Arrow) -> List[Item]:
     lines = wrap(arrow.name, max(lb.width * 1.2, size * 2.0), size)
     line_h = size
     items: List[Item] = []
-    if not lb.transparent:
+    if notation == "dfds":
+        x0, y0, x1, y1 = lb.x, lb.y, lb.x + lb.width + 0.5, lb.y + lb.height
+        fold = [(x1, y1 - 2.0), (x1, y0), (x0, y0), (x0, y1), (x1 - 4.0, y1), (x1, y1 - 2.0)]
+        items.append(Poly(fold, "#ffffff"))
+        items.append(Line(fold, color, 0.6))
+    elif not lb.transparent:
         items.append(Rect(lb.x, lb.y, lb.width, lb.height, "#ffffff"))
     top = lb.y + lb.height / 2.0 - len(lines) * line_h / 2.0
     for i, line in enumerate(lines):
@@ -424,11 +494,11 @@ def build_scene(diagram: Diagram, title: str = "") -> Scene:
     left, top, right, bottom = diagram.frame
     items: List[Item] = [Rect(left, top, right - left, bottom - top, None, FRAME_COLOR, 0.8, (4.0, 3.0))]
     for a in diagram.activities:
-        items.extend(_box(a))
+        items.extend(_box(a, diagram.notation))
     for arrow in diagram.arrows:
         items.extend(_arrow(arrow))
     for arrow in diagram.arrows:
-        items.extend(_label(arrow))
+        items.extend(_label(arrow, diagram.notation))
     for t in diagram.texts:
         items.extend(_free_text(t))
     items.append(Text(left, -9.0, title or heading_of(diagram), HEADING_SIZE, HEADING_COLOR, "start"))

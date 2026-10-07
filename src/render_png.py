@@ -100,7 +100,13 @@ def render_scene_png(scene: Scene) -> bytes:
                 draw.line(run, fill=color, width=w, joint="curve")
 
     for item in scene.items:
-        if isinstance(item, Rect):
+        if isinstance(item, Rect) and item.radius:
+            x0, y0 = px((item.x, item.y))
+            x1, y1 = px((item.x + item.w, item.y + item.h))
+            draw.rounded_rectangle([x0, y0, x1, y1], radius=item.radius * k, fill=item.fill,
+                                   outline=item.stroke,
+                                   width=max(int(round(item.stroke_width * k)), 1))
+        elif isinstance(item, Rect):
             x0, y0 = px((item.x, item.y))
             x1, y1 = px((item.x + item.w, item.y + item.h))
             if item.fill:

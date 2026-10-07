@@ -50,6 +50,12 @@ except ImportError:  # pragma: no cover - script execution
 SIDES = ("right", "bottom", "left", "top")
 ROLES = ("output", "mechanism", "input", "control")
 
+# How a decomposition is drawn (F_DECOMPOSITION_TYPE of the decomposed function; nothing
+# stored, or anything else, is IDEF0), and what a box on it is (F_TYPE: below 1001 an
+# activity - a process on a data flow diagram - else one of the data flow diagram's objects).
+NOTATIONS = {1: "dfd", 2: "dfds"}
+KINDS = {1001: "external", 1002: "store", 1003: "role"}
+
 # Where the diagram frame sits, in model units. It is not stored anywhere: it is what every
 # arrow that lands on the frame is found to use. Left, top and right are the same in every
 # model seen (7, 7, 793); the bottom depends on the Ramus version that drew the page - the
@@ -121,6 +127,11 @@ class Activity:
     fill: Optional[str] = None  # background colour "#rrggbb"; None = white
     color: Optional[str] = None  # outline and text colour; None = black
     font_size: float = 12.0
+    kind: str = "process"  # "process", or on a data flow diagram "external", "store", "role"
+    decomposed: bool = False  # has a decomposition of its own
+    decomposition: str = "idef0"  # how that decomposition is drawn: "idef0", "dfd", "dfds"
+    long_name: str = ""  # the second part of a DFDS name, written small under the first
+    owner_id: Optional[int] = None  # a DFDS role: the box it belongs to
 
     @property
     def has_box(self) -> bool:
@@ -215,6 +226,7 @@ class Diagram:
     texts: List[FreeText] = field(default_factory=list)
     node: str = ""
     frame: Frame = (FRAME_LEFT, FRAME_TOP, FRAME_RIGHT, FRAME_BOTTOM_RAMUS2)
+    notation: str = "idef0"  # "idef0", "dfd" (data flow) or "dfds" (data flow with roles)
 
 
 @dataclass
@@ -315,16 +327,39 @@ class RsfModel:
             if attr >= 0:
                 name_attr[_int(r["QUALIFIER_ID"])] = attr
         texts = self._text_values()
+        dfds = self._dfds_names()
 
         out: Dict[int, _Element] = {}
         for r in self.table("elements"):
             if not self._alive(r):
                 continue
             eid, qid = _int(r["ELEMENT_ID"]), _int(r["QUALIFIER_ID"])
-            name = texts.get((eid, name_attr.get(qid, -1))) or r.get("ELEMENT_NAME") or ""
+            key = (eid, name_attr.get(qid, -1))
+            name = texts.get(key) or dfds.get(key, ("", ""))[0] or r.get("ELEMENT_NAME") or ""
             out[eid] = _Element(qid, name.strip())
         self._memo["elements"] = out
         return out
+
+    def _dfds_names(self) -> Dict[Tuple[int, int], Tuple[str, str]]:
+        """(element, attribute) -> (short name, long name), for a model whose activities are
+        named by a DFDS name - two parts, the second written smaller beneath the first."""
+        if "dfds" not in self._memo:
+            self._memo["dfds"] = {
+                (_int(r["ELEMENT_ID"]), _int(r["ATTRIBUTE_ID"])):
+                    ((r.get("SHORT_NAME") or "").strip(), (r.get("LONG_NAME") or "").strip())
+                for r in self.table("IDEF0/attribute_dfds_names")
+            }
+        return self._memo["dfds"]  # type: ignore[return-value]
+
+    def decomposition_types(self) -> Dict[int, str]:
+        """element -> how its decomposition is drawn, for every function that says (the rest
+        are IDEF0)."""
+        if "notations" not in self._memo:
+            types = self._per_element("IDEF0/attribute_decomposition_types",
+                                      "F_DECOMPOSITION_TYPE", "TYPE")
+            self._memo["notations"] = {eid: NOTATIONS.get(_int(v, -1), "idef0")
+                                       for eid, v in types.items()}
+        return self._memo["notations"]  # type: ignore[return-value]
 
     def _links(self, attribute: str) -> Dict[int, int]:
         """element -> the other element it points at, for a Core.OtherElement attribute."""
@@ -378,6 +413,12 @@ class RsfModel:
         sizes = self._per_element("IDEF0/attribute_fonts", "F_FONT", "SIZE")
         fills = self._per_element("IDEF0/attribute_colors", "F_BACKGROUND", "COLOR")
         inks = self._per_element("IDEF0/attribute_colors", "F_FOREGROUND", "COLOR")
+        notations = self.decomposition_types()
+        owners = self._per_element("IDEF0/attribute_function_ouners", "F_OUNER_ID", "OUNER_ID")
+        links = self._longs("F_LINK")
+        name_attr = {_int(r["QUALIFIER_ID"]): _int(r.get("ATTRIBUTE_FOR_NAME"), -1)
+                     for r in self.table("qualifiers")}
+        dfds = self._dfds_names()
 
         out: Dict[int, Activity] = {}
         for r in self.table("IDEF0/attribute_rectangles"):
@@ -387,23 +428,53 @@ class RsfModel:
             parent, previous = hierarchy.get(eid, (-1, -1))
             if parent <= 0:
                 parent = base_of.get(live[eid].qualifier_id, -1)
+            kind_type = _int(types[eid]) if eid in types else None
+            owner = _int(owners.get(eid), -1)
             out[eid] = Activity(
                 element_id=eid,
-                name=live[eid].name,
+                name=self._shown_name(eid, links.get(eid)),
                 parent_id=parent,
                 previous_id=previous,
                 x=_num(r.get("X")),
                 y=_num(r.get("Y")),
                 width=_num(r.get("WIDTH")),
                 height=_num(r.get("HEIGHT")),
-                type=_int(types[eid]) if eid in types else None,
+                type=kind_type,
                 fill=_argb_hex(fills.get(eid)),
                 color=_argb_hex(inks.get(eid)),
                 font_size=_num(sizes.get(eid), 12.0),
+                kind=KINDS.get(kind_type, "process") if kind_type is not None else "process",
+                decomposition=notations.get(eid, "idef0"),
+                long_name=dfds.get((eid, name_attr.get(live[eid].qualifier_id, -1)),
+                                   ("", ""))[1],
+                owner_id=owner if owner > 0 else None,
             )
+        for a in out.values():
+            parent = out.get(a.parent_id)
+            if parent is not None and a.has_box and a.kind == "process":
+                parent.decomposed = True
         self._number(out, hierarchy)
         self._memo["activities"] = out
         return out
+
+    def _longs(self, attribute: str) -> Dict[int, int]:
+        """element -> its value of a Core.Long attribute."""
+        attr = self.attribute_id(attribute)
+        return {_int(r["ELEMENT_ID"]): _int(r["VALUE"]) for r in self.table("Core/attribute_longs")
+                if attr is not None and _int(r["ATTRIBUTE_ID"]) == attr and r.get("VALUE")}
+
+    def _shown_name(self, eid: int, link: Optional[int]) -> str:
+        """The name a box shows: its own - or, for a data flow diagram's object tied to a
+        catalog item or a flow (F_LINK), that item's name, or what the flow carries."""
+        live = self.elements()
+        if link is not None and link in live:
+            if live[link].qualifier_id in self._qualifier_ids("F_STREAMS"):
+                text = self._stream_labels().get(link, "")
+                if text:
+                    return text
+            elif live[link].name:
+                return live[link].name
+        return live[eid].name
 
     def _per_element(self, table: str, attribute: str, column: str) -> Dict[int, Optional[str]]:
         """element -> one column of a single-valued attribute's table, looked up by the
@@ -426,7 +497,13 @@ class RsfModel:
 
         def walk(parent_id: int, prefix: Optional[str]) -> None:
             ordered = _in_sibling_order(by_parent.get(parent_id, []), hierarchy, acts)
-            for i, a in enumerate(ordered, start=1):
+            # Only activities count: a data flow diagram's external entities, data stores and
+            # roles take no number, as in Ramus.
+            i = 0
+            for a in ordered:
+                if a.kind != "process":
+                    continue
+                i += 1
                 if prefix is None:
                     a.number = "A0"  # the top box on the context diagram
                 else:
@@ -457,7 +534,8 @@ class RsfModel:
             if parent_id in acts:
                 parent_name, node = acts[parent_id].name, acts[parent_id].number
             else:  # a base function: the context diagram
-                parent_name = ordered[0].name if ordered else ""
+                parent_name = next((a.name for a in ordered if a.kind == "process"),
+                                   ordered[0].name if ordered else "")
                 node = "A-0"
             diagram = Diagram(
                 parent_id=parent_id,
@@ -466,6 +544,7 @@ class RsfModel:
                 arrows=arrows_by_owner.get(parent_id, []),
                 node=node,
                 frame=frame,
+                notation=self.decomposition_types().get(parent_id, "idef0"),
             )
             blob = blobs.get(parent_id)
             if blob is not None:

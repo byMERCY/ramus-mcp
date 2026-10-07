@@ -37,9 +37,10 @@ def _dash(dash) -> str:
 
 def _element(item: Item) -> str:
     if isinstance(item, Rect):
+        rounded = f' rx="{_num(item.radius)}" ry="{_num(item.radius)}"' if item.radius else ""
         return (
             f'<rect x="{_num(item.x)}" y="{_num(item.y)}" width="{_num(item.w)}" '
-            f'height="{_num(item.h)}" fill="{item.fill or "none"}" '
+            f'height="{_num(item.h)}"{rounded} fill="{item.fill or "none"}" '
             f'stroke="{item.stroke or "none"}" stroke-width="{_num(item.stroke_width)}"'
             f'{_dash(item.dash)}/>'
         )

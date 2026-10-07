@@ -58,12 +58,18 @@ def check(model: RsfModel, sheet: Optional[str] = None) -> List[Finding]:
     for d in sorted(diagrams, key=_sheet_order):
         if sheet is not None and d.node.lower() != sheet.strip().lower():
             continue
-        found += _box_count(d)
-        for box in d.activities:
-            found += _box_rules(d, box)
-        for a in d.arrows:
-            found += _arrow_rules(d, a)
-            found += _balance(world, d, a, seen)
+        if d.notation == "idef0":
+            found += _box_count(d)
+            for box in d.activities:
+                found += _box_rules(d, box)
+            for a in d.arrows:
+                found += _arrow_rules(d, a)
+                found += _balance(world, d, a, seen)
+        else:
+            for box in d.activities:
+                found += _dfd_box_rules(d, box)
+            for a in d.arrows:
+                found += _dfd_arrow_rules(d, a)
         found += _flow_names(d, named_streams)
     order = {d.node: i for i, d in enumerate(sorted(diagrams, key=_sheet_order))}
     found.sort(key=lambda f: (order.get(f.sheet, 0), f.severity != ERROR))
@@ -229,6 +235,87 @@ def _flow_names(d: Diagram, seen: set) -> List[Finding]:
                                    fix=(f'rename_flow(flow={a.stream_id}, name="...")'
                                         if a.stream_id is not None else None),
                                    flow=a.stream_id, segment=a.sector_id))
+    return out
+
+
+# ---------------------------------------------------------------- data flow diagrams
+#
+# A DFD or DFDS sheet has no ICOM: a flow meets a box on any side. What it has instead
+# (Gane & Sarson, Yourdon): every process takes something in and gives something out - one
+# with only inputs is a "black hole", one with only outputs a "miracle" - and data moves only
+# through a process: never straight between two external entities, two data stores, or an
+# external entity and a store.
+
+_OBJECT = {"external": "external entity", "store": "data store", "role": "role"}
+
+
+def _dfd_box_rules(d: Diagram, box: Activity) -> List[Finding]:
+    out = []
+    what = _OBJECT.get(box.kind, "process")
+    label = f"{box.number} «{box.name.strip()}»" if box.number else f"{what} «{box.name.strip()}»"
+    ref = box.number or str(box.element_id)
+    if not box.name.strip():
+        out.append(Finding("unnamed_activity", ERROR, d.node,
+                           f"A {what} on {d.node} has no name.",
+                           fix=f'rename_activity(activity="{ref}", name="...")',
+                           activity=box.number or None))
+        return out
+    if box.kind != "process":
+        return out
+    problem = _not_a_verb(box.name)
+    if problem:
+        out.append(Finding("activity_name_verb", WARNING, d.node,
+                           f"{label}: {problem}. A process is named by what it does - a verb "
+                           f"phrase, e.g. «Проверить заказ».",
+                           fix=f'rename_activity(activity="{ref}", name="...")',
+                           activity=box.number))
+    ins = [a for a in d.arrows if a.end.kind == "activity" and a.end.activity_id == box.element_id]
+    outs = [a for a in d.arrows
+            if a.start.kind == "activity" and a.start.activity_id == box.element_id]
+    if not ins:
+        out.append(Finding("dfd_needs_input", ERROR, d.node,
+                           f"{label} takes nothing in: a process that makes data from nothing "
+                           f"(a \"miracle\"). Draw the flow it works on into it.",
+                           fix=f'add_arrow(sheet="{d.node}", source={{"activity": "..."}} or '
+                               f'{{"frame": "left"}}, target={{"activity": "{ref}"}}, '
+                               f'name="...")',
+                           activity=box.number))
+    if not outs:
+        out.append(Finding("dfd_needs_output", ERROR, d.node,
+                           f"{label} gives nothing out: data goes in and is lost (a \"black "
+                           f"hole\"). Draw what it produces out of it.",
+                           fix=f'add_arrow(sheet="{d.node}", source={{"activity": "{ref}"}}, '
+                               f'target={{"activity": "..."}} or {{"frame": "right"}}, '
+                               f'name="...")',
+                           activity=box.number))
+    return out
+
+
+def _dfd_arrow_rules(d: Diagram, a: Arrow) -> List[Finding]:
+    out = []
+    name = _flow_label(a)
+    where = dict(flow=a.stream_id, segment=a.sector_id)
+    kinds = {b.element_id: b.kind for b in d.activities}
+    ends = [kinds.get(e.activity_id) for e in (a.start, a.end) if e.kind == "activity"]
+    if len(ends) == 2 and "process" not in ends:
+        pair = " and ".join(_OBJECT.get(k, k) for k in ends)
+        out.append(Finding("dfd_through_process", ERROR, d.node,
+                           f"{name} runs straight between a {pair}; data moves only through a "
+                           f"process. Put the process that moves it in between.", **where))
+    for end, other, which in ((a.start, a.end, "start"), (a.end, a.start, "end")):
+        if end.kind == "open" and other.kind == "frame":  # come down from above, not drawn on
+            out.append(_not_drawn(d, a, other, incoming=(which == "end")))
+        elif end.kind == "open":
+            out.append(Finding("dangling_end", ERROR, d.node,
+                               f"Segment {a.sector_id} of {name} has its {which} attached to "
+                               f"nothing.",
+                               fix=f"delete_arrow(segment={a.sector_id}) and draw it again "
+                                   f"with add_arrow",
+                               **where))
+    if a.start.kind == "frame" and a.end.kind == "frame":
+        out.append(Finding("frame_to_frame", WARNING, d.node,
+                           f"{name} crosses the sheet from frame to frame without touching a "
+                           f"box.", **where))
     return out
 
 

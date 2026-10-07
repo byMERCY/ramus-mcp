@@ -105,8 +105,12 @@ def _activity_id(ref: Any) -> int:
     if text.lstrip("-").isdigit():
         return int(text)
     for a in _Open.activities.values():
-        if a.number.lower() == text.lower():
+        if a.number and a.number.lower() == text.lower():
             return a.element_id
+    # A data flow diagram's external entities and stores have no number: by name, then.
+    named = [a for a in _Open.activities.values() if a.name.strip().lower() == text.lower()]
+    if len(named) == 1:
+        return named[0].element_id
     raise ValueError(f"No activity numbered {text!r}. get_function_tree lists them.")
 
 
@@ -199,7 +203,7 @@ def _diagram(index: int = 0, node: str = "") -> Diagram:
 
 
 def _activity_row(a: Activity) -> Dict[str, Any]:
-    return {
+    row = {
         "id": a.element_id,
         "number": a.number,
         "name": a.name,
@@ -208,6 +212,11 @@ def _activity_row(a: Activity) -> Dict[str, Any]:
         "width": round(a.width, 1),
         "height": round(a.height, 1),
     }
+    if a.kind != "process":
+        row["kind"] = a.kind
+        if a.owner_id is not None:
+            row["owner"] = a.owner_id
+    return row
 
 
 def _end_row(e: End) -> Dict[str, Any]:
@@ -311,14 +320,17 @@ def open_model(path: str, discard_unsaved: bool = False) -> Dict[str, Any]:
 @mcp.tool(title="Create a new model", annotations=_WRITE)
 def create_model(path: str, activity: str, author: str = "", project: Optional[str] = None,
                  model_name: str = "Работы", overwrite: bool = False,
-                 discard_unsaved: bool = False) -> Dict[str, Any]:
+                 discard_unsaved: bool = False, notation: str = "idef0") -> Dict[str, Any]:
     """Create a new Ramus model file and open it - the way to start a model from nothing.
 
     ``path`` is the .rsf file to write; ``activity`` names the whole process as one activity, a
     verb phrase ("Провести олимпиаду"): it is the single box A0 on the context diagram A-0.
     ``author`` and ``project`` (by default the file's name) are what the diagram frame shows;
     ``model_name`` is the model's name in Ramus's list of models. An existing file is
-    replaced only with overwrite (and copied to <name>.backup.rsf first).
+    replaced only with overwrite (and copied to <name>.backup.rsf first). ``notation`` is how
+    the model is drawn: "idef0" (the default), "dfd" - a data flow diagram: processes with
+    rounded corners, external entities and data stores (add_activity kind), flows meeting
+    boxes on any side - or "dfds", a data flow diagram whose activities show their roles.
 
     Then: draw A0's inputs, controls, mechanisms and outputs on the context diagram (add_arrow
     with sheet "A-0"), and decompose it - add_activity under "A0", 3 to 6 boxes - and so on
@@ -329,7 +341,7 @@ def create_model(path: str, activity: str, author: str = "", project: Optional[s
                          f"or create_model again with discard_unsaved=true to drop them.")
     try:
         editor = ModelEditor.create(_model_path(path, must_exist=False), activity, model_name,
-                                    author, project, overwrite)
+                                    author, project, overwrite, notation)
     except FileExistsError as exc:
         raise ValueError(str(exc)) from None
     _Open.editor = editor
@@ -456,6 +468,7 @@ def get_diagram(index: int = 0, node: str = "", include_routes: bool = False) ->
         "index": _Open.diagrams.index(d),
         "node": d.node,
         "parent": d.parent_name or "(root)",
+        "notation": d.notation,
         "frame": dict(zip(("left", "top", "right", "bottom"), d.frame)),
         "activities": [_activity_row(a) for a in d.activities],
         "flows": _flow_rows(d),
@@ -563,7 +576,8 @@ def rename_flow(flow: int, name: str) -> Dict[str, Any]:
 
 @mcp.tool(title="Add an activity", annotations=_EDIT)
 def add_activity(parent: str, name: str, x: Optional[float] = None, y: Optional[float] = None,
-                 width: Optional[float] = None, height: Optional[float] = None) -> Dict[str, Any]:
+                 width: Optional[float] = None, height: Optional[float] = None,
+                 kind: str = "process", owner: Optional[str] = None) -> Dict[str, Any]:
     """Add an activity box to the decomposition of ``parent`` (its number, "A0", or id).
 
     The box goes last on that sheet and takes the next number (A3 after A1, A2); adding the
@@ -571,9 +585,15 @@ def add_activity(parent: str, name: str, x: Optional[float] = None, y: Optional[
     way, down the diagonal from the box before it, clear of boxes, arrows and labels; give them
     (with width/height) to place it yourself, in the units get_diagram reports. Its look is
     copied from the boxes already there. IDEF0 asks for 3 to 6 boxes on a sheet.
+
+    In a DFD or DFDS model (create_model notation) ``kind`` may also be "external" - an
+    external entity, where data comes from or goes to - or "store", a data store; they take
+    no number and are placed apart from the processes (name them by name in add_arrow). In a
+    DFDS model "role" adds a performer as a tag inside the activity ``owner`` (its number).
     """
     _require()
-    result = _Open.editor.add_activity(_activity_id(parent), name, x, y, width, height)
+    result = _Open.editor.add_activity(_activity_id(parent), name, x, y, width, height,
+                                       kind, None if owner is None else _activity_id(owner))
     sheet = next((d for d in _Open.editor.snapshot().diagrams() if d.parent_id == result["parent"]), None)
     if sheet is not None and len(sheet.activities) > 6:
         result["note"] = (f"This sheet now has {len(sheet.activities)} boxes; IDEF0 recommends "
@@ -602,6 +622,11 @@ def add_arrow(sheet: str, source: Dict[str, Any], target: Dict[str, Any],
     or by name) - that keeps the levels balanced. Otherwise it is left as a tunnel. The route
     is orthogonal and kept clear of boxes and other arrows; the name goes beside it. Files
     from Ramus 3 only (Ramus 2 keeps routes in a form this cannot yet write).
+
+    On a data flow diagram (DFD, DFDS) there is no ICOM: an end is {"activity": "A1" or
+    "Клиент", "side": "left" | "top" | "right" | "bottom"} - a flow leaves by the right and
+    arrives by the left unless told otherwise - or {"frame": "left" | "top" | "right" |
+    "bottom"}; boxes are external entities and data stores as well as processes.
     """
     _require()
     return _edited(_Open.editor.add_arrow(_sheet_id(sheet), _end_ref(source), _end_ref(target),

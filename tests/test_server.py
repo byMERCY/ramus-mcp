@@ -278,6 +278,24 @@ class Editing(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "already exists"):
             server.create_model(path, "Другое", discard_unsaved=True)
 
+    def test_a_data_flow_diagram_built_through_the_tools(self):
+        server.save_model()
+        path = os.path.join(self._dir.name, "магазин.rsf")
+        server.create_model(path, "Обработать заказ", notation="dfd")
+        server.add_activity("A0", "Принять заказ")
+        client = server.add_activity("A0", "Клиент", kind="external")
+        self.assertEqual((client["kind"], client["number"]), ("external", ""))
+        # A box without a number is named by its name.
+        flow = server.add_arrow("A0", {"activity": "Клиент"}, {"activity": "A1"}, "заказ")
+        self.assertEqual(flow["to"]["side"], "left")
+        sheet = server.get_diagram(node="A0")
+        self.assertEqual(sheet["notation"], "dfd")
+        self.assertEqual([row.get("kind") for row in sheet["activities"]],
+                         [None, "external"])
+        with self.assertRaises(ValueError):
+            server.create_model(os.path.join(self._dir.name, "x.rsf"), "Дело",
+                                notation="bpmn", discard_unsaved=True)
+
     def test_models_are_found_and_named_relative_to_the_models_folder(self):
         folder = os.path.join(self._dir.name, "models")
         os.makedirs(os.path.join(folder, "курс", "лаба"))

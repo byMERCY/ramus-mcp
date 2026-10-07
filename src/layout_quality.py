@@ -272,11 +272,14 @@ class SheetGeometry:
     segment id) and measure again; :meth:`contribution` prices just what one segment adds."""
 
     def __init__(self, boxes: Iterable[BoxGeom], arrows: Iterable[ArrowGeom], frame: Rect,
-                 texts: Iterable[Rect] = ()):
+                 texts: Iterable[Rect] = (), notation: str = "idef0"):
         self.boxes: Dict[int, BoxGeom] = {b.id: b for b in boxes}
         self.arrows: Dict[int, ArrowGeom] = {a.sector: a for a in arrows}
         self.frame = frame
         self.texts = list(texts)
+        # IDEF0's conventions - feedback round the outside, boxes down the diagonal - are not
+        # a data flow diagram's.
+        self.idef0 = notation == "idef0"
 
     # ---- the measure
 
@@ -355,7 +358,8 @@ class SheetGeometry:
         """An output fed back to a box further left should go over the top into a control and
         under the bottom into an input or a mechanism: its leftward run above, or below, the
         box it leaves."""
-        if a.start.kind != "activity" or a.end.kind != "activity" or a.start.side != "right":
+        if a.start.kind != "activity" or a.end.kind != "activity" or a.start.side != "right" \
+                or not self.idef0:
             return None
         src, dst = self.boxes.get(a.start.activity_id), self.boxes.get(a.end.activity_id)
         if src is None or dst is None or a.end.side not in ("top", "left", "bottom"):
@@ -461,7 +465,7 @@ class SheetGeometry:
         faults = [Fault("box_overlap", WEIGHTS["box_overlap"], (), (a.id, b.id))
                   for i, a in enumerate(boxes) for b in boxes[i + 1:]
                   if _overlap(a.rect, b.rect)]
-        for a, b in zip(boxes, boxes[1:]):
+        for a, b in zip(boxes, boxes[1:]) if self.idef0 else ():
             ax, ay = a.rect[0] + a.rect[2] / 2, a.rect[1] + a.rect[3] / 2
             bx, by = b.rect[0] + b.rect[2] / 2, b.rect[1] + b.rect[3] / 2
             if bx <= ax or by <= ay:
@@ -538,7 +542,8 @@ def geometry_of(diagram) -> SheetGeometry:
                                 end_info(a.end), label,
                                 a.label is not None and a.label.tilde_pos is not None, a.name))
     texts = [(t.x, t.y, t.width, t.height) for t in diagram.texts]
-    return SheetGeometry(boxes, arrows, (left, top, right - left, bottom - top), texts)
+    return SheetGeometry(boxes, arrows, (left, top, right - left, bottom - top), texts,
+                         getattr(diagram, "notation", "idef0"))
 
 
 def assess_diagram(diagram) -> Quality:

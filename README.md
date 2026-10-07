@@ -32,9 +32,9 @@ that Ramus opens.
 
 | | |
 |---|---|
-| **Eyes** | Reads the activity tree, each sheet's boxes and arrows with their ICOM roles, and renders any sheet as a PNG that Claude looks at. Files from Ramus 2.x and 3.x. |
-| **Rules** | `check_model` checks IDEF0: a control and an output on every activity, arrows by the right sides, ICOM balance between levels, 3–6 boxes on a sheet, verbs for activities and nouns for arrows. Every finding comes with the call that fixes it, and every edit reports what it broke or settled. |
-| **Hands** | Creates models, adds, moves and deletes boxes, draws arrows — box to box, to and from the frame, forks and joins — with an orthogonal router that keeps clear of boxes and other arrows, joins arrows across levels, tidies a tangled sheet, and saves. |
+| **Eyes** | Reads the activity tree, each sheet's boxes and arrows with their ICOM roles, and renders any sheet as a PNG that Claude looks at — IDEF0, and data flow diagrams in DFD and DFDS notation with their processes, external entities, data stores and roles drawn the way Ramus draws them. Files from Ramus 2.x and 3.x. |
+| **Rules** | `check_model` checks IDEF0: a control and an output on every activity, arrows by the right sides, ICOM balance between levels, 3–6 boxes on a sheet, verbs for activities and nouns for arrows — and on a data flow diagram, that every process takes something in and gives something out and that data moves only through processes. Every finding comes with the call that fixes it, and every edit reports what it broke or settled. `check_layout` says how well a sheet is drawn. |
+| **Hands** | Creates models in IDEF0, DFD or DFDS, adds, moves and deletes boxes, draws arrows — box to box, to and from the frame, forks and joins — with an orthogonal router that keeps clear of boxes and other arrows, joins arrows across levels, lays a sheet out down the diagonal with shared controls and mechanisms drawn as one line with branches, tidies a tangled sheet, and saves. |
 
 <table>
   <tr>
@@ -114,7 +114,7 @@ decomposition, then `"A1"`, `"A12"`… — and an activity by its number or id.
 |---|---|
 | `list_models(folder?)` | The `.rsf` files in the models folder (or another), newest first |
 | `open_model(path)` · `current_model()` | Open a model; say which one is open |
-| `create_model(path, activity, author?, project?)` | A new model whose context diagram holds the top activity A0 |
+| `create_model(path, activity, author?, project?, notation?)` | A new model — IDEF0, DFD or DFDS — whose context diagram holds the top activity A0 |
 | `list_diagrams()` · `get_function_tree()` | The sheets; the activity tree with IDEF0 numbers |
 | `get_diagram(node, include_routes?)` | One sheet as data: boxes, flows with their ICOM roles, tunnels, ids for editing |
 | `render_diagram(node)` · `render_diagram_svg_text(node)` | One sheet as a PNG, or as SVG |
@@ -136,7 +136,7 @@ decomposition, then `"A1"`, `"A12"`… — and an activity by its number or id.
 
 - Arrows are drawn and rerouted in files saved by Ramus 3.x. A Ramus 2.x file keeps its routes in
   a binary form this does not write yet: open and save it once in Ramus 3.
-- DFD shapes are drawn as IDEF0 boxes, and a sheet is one page.
+- A sheet is one page. Data flow diagrams are laid out with the processes down the diagonal and the external entities and stores beside them; `layout_sheet` redraws their flows but leaves their boxes where they are.
 - A tunnel in square brackets looks like a forgotten arrow in the file; `check_model` reports it
   as a warning that is right only if the tunnel was meant.
 

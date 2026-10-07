@@ -126,4 +126,36 @@ def software(path: str) -> ModelEditor:
     return b.ed
 
 
-SCENARIOS = {"olympiad": olympiad, "order": order, "software": software}
+def shop(path: str) -> ModelEditor:
+    """A data flow diagram: four processes, a customer and a bank, two data stores - flows on
+    every side, nothing of IDEF0's ICOM."""
+    ed = ModelEditor.create(path, "Обработать заказ интернет-магазина", author="ramus-mcp",
+                            project="bench", notation="dfd")
+    top = next(a.element_id for a in ed.snapshot().activities().values() if a.number == "A0")
+    a = {i: ed.add_activity(top, n)["id"] for i, n in enumerate(
+        ["Принять заказ", "Проверить оплату", "Собрать заказ", "Отгрузить заказ"], start=1)}
+    client = ed.add_activity(top, "Клиент", kind="external")["id"]
+    bank = ed.add_activity(top, "Банк", kind="external")["id"]
+    orders = ed.add_activity(top, "Заказы", kind="store")["id"]
+    catalog = ed.add_activity(top, "Каталог товаров", kind="store")["id"]
+
+    def flow(s, t, n):
+        ed.add_arrow(top, s, t, n)
+
+    flow({"activity": client}, {"activity": a[1]}, "заказ")
+    flow({"activity": catalog, "side": "top"}, {"activity": a[1], "side": "bottom"},
+         "цены товаров")
+    flow({"activity": a[1]}, {"activity": orders, "side": "top"}, "новый заказ")
+    flow({"activity": a[1]}, {"activity": a[2]}, "счёт")
+    flow({"activity": a[2]}, {"activity": bank}, "запрос оплаты")
+    flow({"activity": bank, "side": "bottom"}, {"activity": a[2], "side": "bottom"},
+         "подтверждение оплаты")
+    flow({"activity": a[2]}, {"activity": a[3]}, "оплаченный заказ")
+    flow({"activity": a[3]}, {"activity": a[4]}, "собранный заказ")
+    flow({"activity": a[4], "side": "bottom"}, {"activity": orders, "side": "right"},
+         "отметка об отгрузке")
+    flow({"activity": a[4], "side": "top"}, {"activity": client, "side": "top"}, "уведомление")
+    return ed
+
+
+SCENARIOS = {"olympiad": olympiad, "order": order, "software": software, "shop": shop}

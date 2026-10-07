@@ -25,7 +25,8 @@ try:
     from . import router as rt
     from . import visual_data as vd
     from .rsf_document import RsfDocument, Row
-    from .ramus_rsf import FRAME_BOTTOM_RAMUS3, FRAME_LEFT, FRAME_RIGHT, FRAME_TOP, RsfModel
+    from .ramus_rsf import (Activity, FRAME_BOTTOM_RAMUS3, FRAME_LEFT, FRAME_RIGHT,
+                            FRAME_TOP, RsfModel)
     from .scene import NUMBER_SIZE, label_width, text_width, wrap
 except ImportError:  # pragma: no cover - script execution
     import blank_model
@@ -33,7 +34,8 @@ except ImportError:  # pragma: no cover - script execution
     import router as rt
     import visual_data as vd
     from rsf_document import RsfDocument, Row
-    from ramus_rsf import FRAME_BOTTOM_RAMUS3, FRAME_LEFT, FRAME_RIGHT, FRAME_TOP, RsfModel
+    from ramus_rsf import (Activity, FRAME_BOTTOM_RAMUS3, FRAME_LEFT, FRAME_RIGHT,
+                           FRAME_TOP, RsfModel)
     from scene import NUMBER_SIZE, label_width, text_width, wrap
 
 TEXTS = "Core/attribute_texts"
@@ -55,11 +57,17 @@ class ModelEditor:
     @classmethod
     def create(cls, path: str, activity: str, model_name: str = blank_model.DEFAULT_MODEL,
                author: str = "", project: Optional[str] = None,
-               overwrite: bool = False) -> "ModelEditor":
-        """Write a new model file - one IDEF0 model whose context diagram A-0 holds its top
-        activity A0, called ``activity`` - and open it. ``project`` (by default the file's
+               overwrite: bool = False, notation: str = "idef0") -> "ModelEditor":
+        """Write a new model file - one model whose context diagram A-0 holds its top
+        activity A0, called ``activity`` - and open it. ``notation`` is how its diagrams are
+        drawn: "idef0", "dfd" (a data flow diagram) or "dfds" (a data flow diagram with
+        roles); every decomposition in it inherits that. ``project`` (by default the file's
         name) and ``author`` are what the diagram frame shows. An existing file is replaced
         only with ``overwrite``, and then copied to ``<name>.backup.rsf`` first."""
+        notation = str(notation or "idef0").lower()
+        if notation not in _NOTATION_TYPES:
+            raise EditError(f"A model is drawn in IDEF0, DFD or DFDS: notation is one of "
+                            f"{', '.join(_NOTATION_TYPES)}, not {notation!r}.")
         activity = _clean_name(activity, "activity")
         model_name = _clean_name(model_name, "model")
         path = os.path.abspath(path)
@@ -77,10 +85,21 @@ class ModelEditor:
         editor._backed_up = True
         left, top, right, bottom = FRAME_RAMUS3
         w, h = 150.0, 80.0
-        editor._write_box(blank_model.BASE_FUNCTION, blank_model.MODEL_QUALIFIER, activity,
-                          ((left + right - w) / 2, (top + bottom - h) / 2, w, h), None, -1)
+        root = editor._write_box(blank_model.BASE_FUNCTION, blank_model.MODEL_QUALIFIER,
+                                 activity, ((left + right - w) / 2, (top + bottom - h) / 2, w, h),
+                                 None, -1)
+        if _NOTATION_TYPES[notation] > 0:  # IDEF0 is what nothing stored means
+            for element in (blank_model.BASE_FUNCTION, root):
+                editor._set_decomposition(element, _NOTATION_TYPES[notation])
         editor.doc.save(path, overwrite=True)
         return cls(path)
+
+    def _set_decomposition(self, element_id: int, value: int) -> None:
+        """How a function's decomposition is drawn (F_DECOMPOSITION_TYPE): 1 DFD, 2 DFDS."""
+        if not self._set_value("IDEF0/attribute_decomposition_types", "F_DECOMPOSITION_TYPE",
+                               element_id, {"TYPE": value}):
+            self._add_value("IDEF0/attribute_decomposition_types", "F_DECOMPOSITION_TYPE",
+                            element_id, {"TYPE": value})
 
     # ------------------------------------------------------------- reading back
 
@@ -193,7 +212,8 @@ class ModelEditor:
 
     def add_activity(self, parent_id: int, name: str, x: Optional[float] = None,
                      y: Optional[float] = None, width: Optional[float] = None,
-                     height: Optional[float] = None) -> Dict[str, object]:
+                     height: Optional[float] = None, kind: str = "process",
+                     owner: Optional[int] = None) -> Dict[str, object]:
         """Add an activity box to the decomposition of ``parent_id``.
 
         The box goes last in its sheet's order, so it gets the next number (A3 after A1, A2).
@@ -204,33 +224,73 @@ class ModelEditor:
         first spot that overlaps nothing. Its look (font, colours, kind of box) is taken from a
         box already on the sheet, so it matches. Adding the first box under an activity gives
         that activity its decomposition.
+
+        On a data flow diagram (DFD, DFDS) ``kind`` may also be "external" (an external
+        entity - where data comes from or goes to), "store" (a data store) - placed apart from
+        the activities, which they take no number from - and on a DFDS diagram "role": a
+        performer drawn as a tag inside the activity ``owner`` (its id).
         """
         name = _clean_name(name, "activity")
+        kind = str(kind or "process").lower()
+        if kind not in _KIND_TYPES:
+            raise EditError(f"A box is a process, an external, a store or a role, not {kind!r}.")
         model = self.snapshot()
         acts = model.activities()
         if parent_id not in acts:
-            if any(d.parent_id == parent_id and d.node == "A-0" for d in model.diagrams()):
+            context = next((d for d in model.diagrams()
+                            if d.parent_id == parent_id and d.node == "A-0"), None)
+            if context is not None and context.notation != "idef0" and kind != "process":
+                # A data flow diagram's context: the one process and what surrounds it.
+                top = next(a for a in context.activities if a.kind == "process")
+                parent = Activity(parent_id, context.parent_name, -1, -1, number="",
+                                  font_size=top.font_size, decomposition=context.notation)
+                acts = dict(acts)
+                acts[parent_id] = parent
+            elif context is not None:
                 raise EditError("The context diagram (A-0) holds exactly one activity, the top "
                                 "of the model. Add the box under A0 - or any other activity - "
-                                "to put it on that activity's decomposition.")
-            raise EditError(f"There is no activity with id {parent_id} to decompose. Use the "
-                            f"ids get_function_tree reports.")
+                                "to put it on that activity's decomposition."
+                                + (" On a data flow diagram's context, external entities and "
+                                   "data stores may join it (kind)." if context.notation !=
+                                   "idef0" else ""))
+            else:
+                raise EditError(f"There is no activity with id {parent_id} to decompose. Use "
+                                f"the ids get_function_tree reports.")
         parent = acts[parent_id]
         sheet = next((d for d in model.diagrams() if d.parent_id == parent_id), None)
         siblings = list(sheet.activities) if sheet else []
         frame = sheet.frame if sheet else model.frame()
-        template = siblings[-1] if siblings else parent
+        notation = parent.decomposition
+        if kind != "process" and notation == "idef0":
+            raise EditError(f"An IDEF0 sheet holds activities only; externals, stores and roles "
+                            f"belong on a data flow diagram (a model created with notation "
+                            f"\"dfd\" or \"dfds\").")
+        if kind == "role" and notation != "dfds":
+            raise EditError("Roles are drawn on DFDS diagrams only (notation \"dfds\").")
+        owner_box = None
+        if kind == "role":
+            owner_box = next((b for b in siblings if b.element_id == owner
+                              and b.kind == "process"), None)
+            if owner_box is None:
+                raise EditError("A role belongs to an activity on the same sheet: give its id "
+                                "as owner (get_diagram lists them).")
+        processes = [b for b in siblings if b.kind == "process"]
+        template = next((b for b in reversed(siblings) if b.kind == "process"), parent)
 
         relaid = []
         # Arrows come down onto a new sheet from above before any box is there to take them:
         # until one touches a box, the boxes are free to be laid out again.
         bare = sheet is None or not any(e.kind == "activity" for a in sheet.arrows
                                         for e in (a.start, a.end))
-        if x is None and y is None and width is None and height is None and bare:
-            texts = [(b.name, b.font_size) for b in siblings] + \
-                [(name, template.font_size if siblings else parent.font_size)]
-            rects = _diagonal(texts, frame)
-            for b, r in zip(siblings, rects):
+        shifted = []  # roles moved along to make room for a new one
+        if kind != "process":
+            w, h, x, y, shifted = self._place_object(kind, name, template.font_size, sheet,
+                                                     frame, owner_box, x, y, width, height)
+        elif x is None and y is None and width is None and height is None and bare:
+            texts = [(b.name, b.font_size) for b in processes] + \
+                [(name, template.font_size if processes else parent.font_size)]
+            rects = _diagonal(texts, frame, _SIDE_ROOM.get(notation, 0.0))
+            for b, r in zip(processes, rects):
                 if (b.x, b.y, b.width, b.height) != r:
                     self._set_value("IDEF0/attribute_rectangles", "F_BOUNDS", b.element_id,
                                     {"X": r[0], "Y": r[1], "WIDTH": r[2], "HEIGHT": r[3]})
@@ -245,21 +305,70 @@ class ModelEditor:
         _inside_frame(float(x), float(y), w, h, frame)
 
         parent_row = self._element_row(parent_id)
-        new_id = self._write_box(parent_id, int(parent_row["QUALIFIER_ID"]), name,
+        # A box belongs to its model's catalog - which, on a data flow diagram's context, is
+        # not the catalog of the base function it is drawn under but that of the top process.
+        qualifier = int(self._element_row(
+            parent_id if parent.number or parent.has_box else template.element_id)["QUALIFIER_ID"])
+        new_id = self._write_box(parent_id, qualifier, name,
                                  (float(x), float(y), w, h), template.element_id,
                                  siblings[-1].element_id if siblings else -1,
-                                 keep_element_name=bool(parent_row.get("ELEMENT_NAME")))
-        number = (parent.number + str(len(siblings) + 1)) if parent.number != "A0" \
-            else "A" + str(len(siblings) + 1)
+                                 keep_element_name=bool(parent_row.get("ELEMENT_NAME")),
+                                 type_value=_KIND_TYPES[kind])
+        if owner_box is not None:
+            self._add_value("IDEF0/attribute_function_ouners", "F_OUNER_ID", new_id,
+                            {"OUNER_ID": owner_box.element_id})
+        for role, rect in shifted:
+            self._set_value("IDEF0/attribute_rectangles", "F_BOUNDS", role,
+                            {"X": rect[0], "Y": rect[1], "WIDTH": rect[2], "HEIGHT": rect[3]})
+        if kind == "process":
+            n = len(processes) + 1
+            number = (parent.number + str(n)) if parent.number != "A0" else "A" + str(n)
+        else:
+            number = ""
         result = {"id": new_id, "number": number, "name": name, "parent": parent_id,
                   "x": float(x), "y": float(y), "width": w, "height": h}
+        if kind != "process":
+            result["kind"] = kind
         if relaid:
             result["relaid"] = relaid
         return result
 
+    def _place_object(self, kind: str, name: str, size: float, sheet, frame, owner_box,
+                      x, y, width, height):
+        """Size and place a data flow diagram's object where it is not told: an external
+        entity down the left edge, a data store along the bottom, a role in a row along the
+        bottom of the activity it belongs to - each clear of what is there."""
+        text = max((text_width(word, size) for word in name.split()), default=0.0)
+        if kind == "role":
+            w = float(width) if width else max(30.0, text_width(name, size) + 10.0)
+            h = float(height) if height else size * 1.2 + 6.0
+            shifted = []
+            if x is None or y is None:
+                roles = [b for b in (sheet.activities if sheet else [])
+                         if b.kind == "role" and b.owner_id == owner_box.element_id]
+                rects = _justify_roles((owner_box.x, owner_box.y, owner_box.width,
+                                        owner_box.height),
+                                       [(r.width, r.height) for r in roles] + [(w, h)])
+                shifted = [(r.element_id, rect) for r, rect in zip(roles, rects)
+                           if rect != (r.x, r.y, r.width, r.height)]
+                x, y = rects[-1][0], rects[-1][1]
+            return w, h, float(x), float(y), shifted
+        if kind == "external":
+            w = float(width) if width else max(90.0, min(140.0, text + 24.0))
+            h = float(height) if height else 40.0
+        else:
+            w = float(width) if width else max(110.0, min(170.0, text + 40.0))
+            h = float(height) if height else 28.0
+        if x is None or y is None:
+            left, top, right, bottom = frame
+            ideal = (left + 12.0, top + 60.0) if kind == "external" else \
+                ((left + right - w) / 2, bottom - h - 24.0)
+            x, y = _free_spot(sheet, frame, w, h, ideal)
+        return w, h, float(x), float(y), []
+
     def _write_box(self, parent_id: int, qualifier_id: int, name: str, rect,
                    template_id: Optional[int], previous_id: int,
-                   keep_element_name: bool = False) -> int:
+                   keep_element_name: bool = False, type_value: Optional[int] = None) -> int:
         """Write a new box: its element in the model's catalog, its place in the tree (last
         after ``previous_id`` under ``parent_id``), its name and frame, and its look copied
         from ``template_id`` (or the defaults). A parent getting its first child is given
@@ -292,8 +401,12 @@ class ModelEditor:
                         {"TYPE": 0, "OTHER_NAME": ""})
         self._copy_value("IDEF0/attribute_fonts", "F_FONT", template_id, new_id,
                          ("NAME", "SIZE", "STYLE"), {"NAME": "Dialog", "SIZE": 10, "STYLE": 0})
-        self._copy_value("IDEF0/attribute_function_types", "F_TYPE", template_id, new_id,
-                         ("TYPE",), {"TYPE": 1})
+        if type_value is None or type_value < 1001:
+            self._copy_value("IDEF0/attribute_function_types", "F_TYPE", template_id, new_id,
+                             ("TYPE",), {"TYPE": 1})
+        else:
+            self._add_value("IDEF0/attribute_function_types", "F_TYPE", new_id,
+                            {"TYPE": type_value})
         self._copy_value("IDEF0/attribute_colors", "F_BACKGROUND", template_id, new_id,
                          ("COLOR",), {"COLOR": -1})
         self._copy_value("IDEF0/attribute_colors", "F_FOREGROUND", template_id, new_id,
@@ -395,8 +508,8 @@ class ModelEditor:
                             f"under it first (add_activity), or pick a sheet from list_diagrams.")
         on_sheet = {a.element_id: a for a in sheet.activities}
         by_id = {a.sector_id: a for a in sheet.arrows}
-        src = _end_spec(source, "source", on_sheet, by_id)
-        dst = _end_spec(target, "target", on_sheet, by_id)
+        src = _end_spec(source, "source", on_sheet, by_id, sheet.notation)
+        dst = _end_spec(target, "target", on_sheet, by_id, sheet.notation)
         trunk, join = src.arrow, dst.arrow  # the arrow forked from / the arrow joined
         other = trunk or join
         if src.kind == dst.kind and src.kind in ("frame", "arrow"):
@@ -1303,15 +1416,22 @@ class ModelEditor:
         tidied = self.tidy_sheet(sheet_id)
         tidied_state = self.doc.checkpoint()
         self.doc.restore(saved)
-        rects = _diagonal([(a.name, a.font_size) for a in sheet.activities], sheet.frame)
+        # The diagonal is IDEF0's: a data flow diagram's boxes stay where they were put,
+        # and only its flows are drawn again.
+        processes = [a for a in sheet.activities if a.kind == "process"]
+        if sheet.notation == "idef0":
+            rects = _diagonal([(a.name, a.font_size) for a in processes], sheet.frame)
+        else:
+            rects = [(a.x, a.y, a.width, a.height) for a in processes]
         moved = []
-        for a, r in zip(sheet.activities, rects):
+        for a, r in zip(processes, rects):
             if (a.x, a.y, a.width, a.height) != r:
                 self._set_value("IDEF0/attribute_rectangles", "F_BOUNDS", a.element_id,
                                 {"X": r[0], "Y": r[1], "WIDTH": r[2], "HEIGHT": r[3]})
                 moved.append({"id": a.element_id, "number": a.number, "x": r[0], "y": r[1],
                               "width": r[2], "height": r[3]})
-        boxes = {a.element_id: r for a, r in zip(sheet.activities, rects)}
+        boxes = {a.element_id: (a.x, a.y, a.width, a.height) for a in sheet.activities}
+        boxes.update({a.element_id: r for a, r in zip(processes, rects)})
         order = {a.element_id: i for i, a in enumerate(sheet.activities)}
         redrawn = self._redraw_parts(sheet_id, free=True, keep_all=True,
                                      order=lambda parts: _drawing_order(parts, boxes, order))
@@ -1800,6 +1920,13 @@ _EMPTY_V1 = struct.pack("<iii", 1, 0, 0)
 _GAP = 24.0  # room kept between boxes, and between a box and the frame
 
 
+# How a model is drawn (F_DECOMPOSITION_TYPE; IDEF0 stores nothing) and what a box is
+# (F_TYPE; an activity takes the type of the box it is copied from).
+_NOTATION_TYPES = {"idef0": -1, "dfd": 1, "dfds": 2}
+_KIND_TYPES = {"process": None, "external": 1001, "store": 1002, "role": 1003}
+# Room kept at either side of a data flow diagram's activities for its external entities.
+_SIDE_ROOM = {"dfd": 60.0, "dfds": 60.0}
+
 # The IDEF0 diagonal, fitted to the page: the boxes' size and the gaps between them.
 # Tried in turn until the boxes fit: the room left round them for the frame's arrows and their
 # names (left and right, top and bottom), and the least gap between one box and the next across
@@ -1823,7 +1950,7 @@ def _box_needs(texts, width: float) -> float:
     return tallest + NUMBER_SIZE + 12.0
 
 
-def _diagonal(texts, frame) -> List[Tuple[float, float, float, float]]:
+def _diagonal(texts, frame, side_room: float = 0.0) -> List[Tuple[float, float, float, float]]:
     """Where ``len(texts)`` boxes go down the IDEF0 diagonal, from top left to bottom right,
     one size for all, filling the page: as big as there is room for (and no bigger than looks
     right), never narrower than the longest word of a name nor lower than its lines, with the
@@ -1836,6 +1963,7 @@ def _diagonal(texts, frame) -> List[Tuple[float, float, float, float]]:
     longest = max(text_width(word, size) for name, size in texts for word in name.split() or [""])
     need_w = max(_BOX_W[0], longest + 14.0)
     for mx, my, least_x, least_y in _FITS:
+        mx += side_room
         aw, ah = right - left - 2 * mx, bottom - top - 2 * my
         w = max(need_w, min(_BOX_W[1], (aw - (n - 1) * _GAP_X[0]) / n))
         h = min(_BOX_H[1], max(w * 0.5, _BOX_H[0]), (ah - (n - 1) * _GAP_Y[0]) / n)
@@ -1884,7 +2012,7 @@ def _obstacles(sheet):
     return boxes, lines, labels
 
 
-def _free_spot(sheet, frame, w: float, h: float):
+def _free_spot(sheet, frame, w: float, h: float, ideal=None):
     """Where a new box goes when no position is given.
 
     IDEF0 lays a sheet out down the diagonal, so the ideal spot is just right of and below the
@@ -1894,8 +2022,10 @@ def _free_spot(sheet, frame, w: float, h: float):
     """
     left, top, right, bottom = frame
     boxes, lines, labels = _obstacles(sheet)
-    ordered = list(sheet.activities) if sheet else []
-    if ordered:
+    ordered = [a for a in (sheet.activities if sheet else []) if a.kind == "process"]
+    if ideal is not None:
+        pass
+    elif ordered:
         last = ordered[-1]
         ideal = (last.x + last.width + _GAP, last.y + last.height + _GAP)
     else:
@@ -1967,8 +2097,18 @@ class _EndSpec:
     arrow: Optional[object] = None  # ramus_rsf.Arrow, for a fork
 
 
-def _end_spec(spec: Dict[str, object], which: str, on_sheet, arrows=None) -> _EndSpec:
-    """Read one end of a requested arrow, refusing what IDEF0 does not allow."""
+def _side_of(word: object) -> Optional[int]:
+    """A side named as a side ("left") or by the ICOM role it stands for ("input")."""
+    word = str(word or "").lower()
+    if word in _SIDE_NUMBERS:
+        return _SIDE_NUMBERS[word]
+    return ROLE_SIDE.get(word)
+
+
+def _end_spec(spec: Dict[str, object], which: str, on_sheet, arrows=None,
+              notation: str = "idef0") -> _EndSpec:
+    """Read one end of a requested arrow, refusing what IDEF0 does not allow - on a data flow
+    diagram, where a flow may meet a box or the frame on any side, only what makes no sense."""
     if not isinstance(spec, dict):
         raise EditError(f'The {which} must be an object such as {{"activity": 12, "role": '
                         f'"input"}} or {{"frame": "input"}}.')
@@ -1983,6 +2123,8 @@ def _end_spec(spec: Dict[str, object], which: str, on_sheet, arrows=None) -> _En
             raise EditError(f"There is no arrow segment {sid} drawn on this sheet to {what}. "
                             f"get_diagram lists each flow's segments.")
         return _EndSpec("arrow", -1, arrow=arrow)
+    if notation != "idef0" and "arrow" not in spec:
+        return _dfd_end_spec(spec, which, on_sheet)
     if "frame" in spec:
         role = str(spec["frame"]).lower()
         allowed = ("input", "control", "mechanism") if which == "source" else ("output",)
@@ -2011,6 +2153,33 @@ def _end_spec(spec: Dict[str, object], which: str, on_sheet, arrows=None) -> _En
             raise EditError("Say what the arrow is to the target box: input, control or "
                             "mechanism.")
     return _EndSpec("activity", ROLE_SIDE[role], activity=on_sheet[aid], role=role)
+
+
+def _dfd_end_spec(spec: Dict[str, object], which: str, on_sheet) -> _EndSpec:
+    """One end on a data flow diagram: {"activity": id, "side": "left"} or {"frame": "top"}
+    - a side by name or by the IDEF0 role it would be; by default a flow leaves by the right
+    and arrives by the left."""
+    default = "right" if which == "source" else "left"
+    if "frame" in spec:
+        side = _side_of(spec["frame"] if spec["frame"] not in (True, None) else
+                        spec.get("side", "left" if which == "source" else "right"))
+        if side is None:
+            raise EditError(f"Say which side of the frame the {which} is on: left, top, right "
+                            f"or bottom.")
+        return _EndSpec("frame", side, role=rt_side_name(side))
+    if "activity" not in spec:
+        raise EditError(f'The {which} names neither a box nor the frame.')
+    try:
+        aid = int(spec["activity"])
+    except (TypeError, ValueError):
+        raise EditError(f"The {which}'s box must be an id, not {spec['activity']!r}.")
+    if aid not in on_sheet:
+        raise EditError(f"Box {aid} is not on this sheet; get_diagram lists them.")
+    side = _side_of(spec.get("side", spec.get("role", default)))
+    if side is None:
+        raise EditError(f"Say which side of the box the {which} is on: left, top, right or "
+                        f"bottom.")
+    return _EndSpec("activity", side, activity=on_sheet[aid], role=rt_side_name(side))
 
 
 def _describe_end(spec: _EndSpec, which: str = "source") -> Dict[str, object]:
@@ -2063,6 +2232,31 @@ def _crossing_pairs(routes, arrows) -> List[Tuple[int, int]]:
                    for p, q in zip(routes[s], routes[s][1:]) if p != q
                    for u, v in zip(routes[t], routes[t][1:]) if u != v):
                 out.append((s, t))
+    return out
+
+
+def _justify_roles(box, sizes) -> List[Tuple[float, float, float, float]]:
+    """Where a DFDS activity's roles stand, as Ramus sets them out: in rows from its left edge,
+    3 apart, a new row when the next would run past its right edge, the last row along its
+    bottom and the ones before it stacked above."""
+    bx, by, bw, bh = box
+    rows: List[List[Tuple[float, float]]] = [[]]
+    x = bx + 2.0
+    for w, h in sizes:
+        if rows[-1] and x + w > bx + bw:
+            rows.append([])
+            x = bx + 2.0
+        rows[-1].append((w, h))
+        x += w + 3.0
+    out: List[Tuple[float, float, float, float]] = []
+    heights = [max(h for _, h in row) for row in rows]
+    y = by + bh - 2.0 - sum(heights) - 2.0 * (len(rows) - 1)
+    for row, height in zip(rows, heights):
+        x = bx + 2.0
+        for w, h in row:
+            out.append((round(x, 2), round(y, 2), w, h))
+            x += w + 3.0
+        y += height + 2.0
     return out
 
 
@@ -2277,6 +2471,7 @@ class _Layout:
         self.frame = (left, top, right - left, bottom - top)
         self.boxes = {a.element_id: _box(a) for a in sheet.activities}
         self.numbers = {a.element_id: a.number for a in sheet.activities}
+        self.notation = getattr(sheet, "notation", "idef0")
         self.order = {a.element_id: i for i, a in enumerate(sheet.activities)}
         self.routes = {a.sector_id: list(a.points) for a in sheet.arrows if a.has_route}
         self.ends = {a.sector_id: (a.start, a.end) for a in sheet.arrows}
@@ -2297,7 +2492,7 @@ class _Layout:
                                s in self.tildes, self.names_of.get(s, ""))
                   for s, pts in self.routes.items()
                   if s in self.ends and s not in self.stubs and len(pts) >= 2]
-        return lq.SheetGeometry(boxes, arrows, self.frame, self.texts)
+        return lq.SheetGeometry(boxes, arrows, self.frame, self.texts, self.notation)
 
     def number_zone(self, box_id: int, side: int) -> Tuple[Tuple[float, float], ...]:
         """The stretch of a box's side its number is written beside (bottom right), if it
@@ -2447,7 +2642,8 @@ class _Layout:
         """The router's ``extra`` for an output fed back into a box further left - priced to
         go over the top into a control, under the bottom into an input or mechanism - or None
         for any other arrow."""
-        if start.kind != "activity" or end.kind != "activity" or start.side != rt.SIDE_RIGHT:
+        if start.kind != "activity" or end.kind != "activity" or start.side != rt.SIDE_RIGHT \
+                or self.notation != "idef0":
             return None
         src, dst = self.boxes.get(start.owner), self.boxes.get(end.owner)
         if src is None or dst is None or dst[0] + dst[2] / 2 >= src[0] + src[2] / 2:
