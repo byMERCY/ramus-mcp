@@ -11,7 +11,8 @@ The IDEF0 rules (:mod:`idef0_rules`) say whether a model is *right*; this says w
   mechanism "down and under" (FIPS 183);
 * a name far from its arrow, nearer another arrow than its own, or lying on a box, another name
   or a line;
-* a route through a box, boxes on top of one another.
+* a route through a box, boxes on top of one another, boxes off the diagonal - IDEF0 sets a
+  sheet's boxes out from top left to bottom right in their numbered order.
 
 Each fault carries penalty points; the sheet's score is their sum plus a little for every bend
 and every unit of detour. Lower is better, and 0 is out of reach for any real sheet - the score
@@ -55,6 +56,7 @@ WEIGHTS: Dict[str, float] = {
     "label_off_sheet": 10.0,
     "through_box": 40.0,
     "box_overlap": 50.0,
+    "off_diagonal": 8.0,  # a box not right of and below the one numbered before it
 }
 BEND = 2.0
 DETOUR_PER_UNIT = 0.15
@@ -85,7 +87,8 @@ FIXES: Dict[str, str] = {
     "label_on_line": "tidy_labels",
     "label_off_sheet": "tidy_labels",
     "through_box": "tidy_sheet",
-    "box_overlap": "move_activity",
+    "box_overlap": "layout_sheet",
+    "off_diagonal": "layout_sheet",
 }
 
 
@@ -452,10 +455,20 @@ class SheetGeometry:
     # ---- faults of the boxes
 
     def _box_faults(self) -> List[Fault]:
+        """Boxes on top of each other, and boxes off the diagonal: each should stand right of
+        and below the one before it (``boxes`` is in the sheet's order)."""
         boxes = list(self.boxes.values())
-        return [Fault("box_overlap", WEIGHTS["box_overlap"], (), (a.id, b.id))
-                for i, a in enumerate(boxes) for b in boxes[i + 1:]
-                if _overlap(a.rect, b.rect)]
+        faults = [Fault("box_overlap", WEIGHTS["box_overlap"], (), (a.id, b.id))
+                  for i, a in enumerate(boxes) for b in boxes[i + 1:]
+                  if _overlap(a.rect, b.rect)]
+        for a, b in zip(boxes, boxes[1:]):
+            ax, ay = a.rect[0] + a.rect[2] / 2, a.rect[1] + a.rect[3] / 2
+            bx, by = b.rect[0] + b.rect[2] / 2, b.rect[1] + b.rect[3] / 2
+            if bx <= ax or by <= ay:
+                faults.append(Fault("off_diagonal", WEIGHTS["off_diagonal"], (), (a.id, b.id),
+                                    detail=f"{b.number or b.id} is not right of and below "
+                                           f"{a.number or a.id}"))
+        return faults
 
 
 def _simplified(points: Sequence[Point]) -> List[Point]:

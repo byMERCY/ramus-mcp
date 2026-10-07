@@ -1,5 +1,6 @@
 """Measure the layout code: build each scenario sheet from nothing (tests/layout_scenarios.py),
-score it as drawn and after tidy_sheet (src/layout_quality.py), and time both.
+score it as drawn, after tidy_sheet and after layout_sheet (src/layout_quality.py), and time
+each.
 
     python tools/layout_bench.py [--png DIR] [--models DIR] [scenario ...]
 
@@ -30,10 +31,11 @@ def _sheets(ed):
     return [d for d in ed.snapshot().diagrams() if d.node != "A-0" or len(d.arrows) > 0]
 
 
-def _line(name, before, after, built_s, tidy_s):
-    counts = ", ".join(f"{k} {v}" for k, v in after.counts().items()) or "-"
+def _line(name, before, after, laid, built_s, tidy_s, laid_s):
+    counts = ", ".join(f"{k} {v}" for k, v in laid.counts().items()) or "-"
     built = f"{built_s:6.2f}s" if built_s is not None else "      -"
-    print(f"{name:<28} {before.score:8.1f} {after.score:8.1f} {built} {tidy_s:6.2f}s  {counts}")
+    print(f"{name:<24} {before.score:7.1f} {after.score:7.1f} {laid.score:7.1f} {built} "
+          f"{tidy_s:6.2f}s {laid_s:6.2f}s  {counts}")
 
 
 def _png(folder, name, diagram):
@@ -50,18 +52,26 @@ def run_scenario(name, build, png_dir):
         top = next(d for d in ed.snapshot().diagrams() if d.node == "A0")
         before = lq.assess_diagram(top)
         _png(png_dir, f"{name}-drawn", top)
+        saved = ed.doc.checkpoint()
         t0 = time.perf_counter()
         ed.tidy_sheet(top.parent_id)
         tidy_s = time.perf_counter() - t0
-        top = next(d for d in ed.snapshot().diagrams() if d.node == "A0")
-        after = lq.assess_diagram(top)
-        _png(png_dir, f"{name}-tidy", top)
-        _line(name, before, after, built_s, tidy_s)
-        return before.score, after.score
+        tidied = next(d for d in ed.snapshot().diagrams() if d.node == "A0")
+        after = lq.assess_diagram(tidied)
+        _png(png_dir, f"{name}-tidy", tidied)
+        ed.doc.restore(saved)
+        t0 = time.perf_counter()
+        ed.layout_sheet(top.parent_id)
+        laid_s = time.perf_counter() - t0
+        laid_out = next(d for d in ed.snapshot().diagrams() if d.node == "A0")
+        laid = lq.assess_diagram(laid_out)
+        _png(png_dir, f"{name}-laid", laid_out)
+        _line(name, before, after, laid, built_s, tidy_s, laid_s)
+        return before.score, after.score, laid.score
 
 
 def run_models(folder, png_dir):
-    total = [0.0, 0.0]
+    total = [0.0, 0.0, 0.0]
     for path in sorted(glob.glob(os.path.join(folder, "**", "*.rsf"), recursive=True)):
         if ".backup" in os.path.basename(path):
             continue
@@ -74,18 +84,28 @@ def run_models(folder, png_dir):
         for d in sheets:
             label = f"{os.path.splitext(os.path.basename(path))[0][:20]}:{d.node}"
             before = lq.assess_diagram(d)
-            t0 = time.perf_counter()
+            saved = ed.doc.checkpoint()
             try:
+                t0 = time.perf_counter()
                 ed.tidy_sheet(d.parent_id)
+                tidy_s = time.perf_counter() - t0
+                after = lq.assess_diagram(next(x for x in ed.snapshot().diagrams()
+                                               if x.parent_id == d.parent_id))
+                ed.doc.restore(saved)
+                t0 = time.perf_counter()
+                ed.layout_sheet(d.parent_id)
+                laid_s = time.perf_counter() - t0
+                laid_out = next(x for x in ed.snapshot().diagrams() if x.parent_id == d.parent_id)
+                laid = lq.assess_diagram(laid_out)
+                ed.doc.restore(saved)
             except Exception as e:
-                print(f"{label}: tidy_sheet failed: {e}")
+                print(f"{label}: failed: {e}")
+                ed.doc.restore(saved)
                 continue
-            tidy_s = time.perf_counter() - t0
-            after = lq.assess_diagram(next(x for x in ed.snapshot().diagrams()
-                                           if x.parent_id == d.parent_id))
-            _line(label, before, after, None, tidy_s)
-            total[0] += before.score
-            total[1] += after.score
+            _png(png_dir, label.replace(":", "-") + "-laid", laid_out)
+            _line(label, before, after, laid, None, tidy_s, laid_s)
+            for i, v in enumerate((before.score, after.score, laid.score)):
+                total[i] += v
     return total
 
 
@@ -97,16 +117,16 @@ def main():
     args = parser.parse_args()
     if args.png:
         os.makedirs(args.png, exist_ok=True)
-    print(f"{'sheet':<28} {'drawn':>8} {'tidied':>8} {'build':>7} {'tidy':>7}  faults left")
-    totals = [0.0, 0.0]
+    print(f"{'sheet':<24} {'drawn':>7} {'tidied':>7} {'laid':>7} {'build':>7} {'tidy':>7} "
+          f"{'layout':>7}  faults left after layout_sheet")
+    totals = [0.0, 0.0, 0.0]
     for name in args.scenarios:
-        b, a = run_scenario(name, SCENARIOS[name], args.png)
-        totals[0] += b
-        totals[1] += a
-    print(f"{'scenarios total':<28} {totals[0]:8.1f} {totals[1]:8.1f}")
+        for i, v in enumerate(run_scenario(name, SCENARIOS[name], args.png)):
+            totals[i] += v
+    print(f"{'scenarios total':<24} {totals[0]:7.1f} {totals[1]:7.1f} {totals[2]:7.1f}")
     if args.models:
         m = run_models(args.models, args.png)
-        print(f"{'models total':<28} {m[0]:8.1f} {m[1]:8.1f}")
+        print(f"{'models total':<24} {m[0]:7.1f} {m[1]:7.1f} {m[2]:7.1f}")
 
 
 if __name__ == "__main__":

@@ -316,6 +316,12 @@ class Editing(unittest.TestCase):
         with self.assertRaises(ValueError):
             server.check_layout("A9")
 
+    def test_lay_a_sheet_out_again_by_number(self):
+        result = server.layout_sheet("A0")
+        self.assertEqual(result["sheet"], "A0")
+        self.assertIn("before", result["layout"])
+        self.assertIn("moved", result)
+
     def test_tidy_a_sheet_and_its_names_by_number(self):
         result = server.tidy_sheet("A0")
         self.assertEqual(result["sheet"], "A0")
@@ -357,7 +363,8 @@ class OverStdio(unittest.TestCase):
             {"open_model", "current_model", "list_diagrams", "get_function_tree",
              "get_diagram", "render_diagram", "render_diagram_svg_text",
              "rename_activity", "rename_flow", "add_activity", "add_arrow", "move_activity",
-             "delete_activity", "delete_arrow", "tidy_sheet", "tidy_labels", "save_model",
+             "delete_activity", "delete_arrow", "tidy_sheet", "layout_sheet", "tidy_labels",
+             "save_model",
              "check_model", "check_layout", "join_levels", "create_model", "list_models"},
         )
         by_name = {t.name: t for t in tools.tools}

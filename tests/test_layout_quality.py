@@ -4,10 +4,11 @@ import unittest
 
 import _paths  # noqa: F401  (puts src/ on the path)
 
+import idef0_rules as rules
 import layout_quality as lq
 import router as rt
-from layout_scenarios import SCENARIOS, olympiad, order
-from model_editor import _even_slots
+from layout_scenarios import SCENARIOS, _Build, olympiad, order
+from model_editor import _diagonal, _even_slots
 from rsf_document import RsfDocument
 
 FRAME = (7.0, 7.0, 786.0, 430.0)
@@ -104,6 +105,12 @@ class Measuring(unittest.TestCase):
         self.assertIn("through_box", _kinds([a]))
         c = lq.BoxGeom(3, (390.0, 220.0, 50.0, 50.0), "A3")
         self.assertIn("box_overlap", _kinds([], (A, B, c)))
+
+    def test_boxes_go_down_the_diagonal_in_their_order(self):
+        self.assertNotIn("off_diagonal", _kinds([], (A, B)))
+        self.assertIn("off_diagonal", _kinds([], (B, A)))
+        level = lq.BoxGeom(2, (300.0, 100.0, 120.0, 60.0), "A2")
+        self.assertIn("off_diagonal", _kinds([], (A, level)))
 
     def test_a_segments_contribution_falls_when_its_crossing_goes(self):
         h = _arrow(1, [(7, 180), (300, 180)], _end(None, "left"), _end(B, "left"))
@@ -222,6 +229,108 @@ class Drawing(unittest.TestCase):
             self.assertTrue(report["worst"])
             for f in report["worst"]:
                 self.assertIn(f["fix"], ("tidy_sheet", "tidy_labels", "move_activity"))
+
+
+
+class Diagonal(unittest.TestCase):
+    PAGE = (7.0, 7.0, 793.0, 437.0)
+
+    def test_up_to_six_boxes_fill_the_page_down_the_diagonal(self):
+        names = ["Собрать требования", "Спроектировать систему", "Написать код",
+                 "Протестировать", "Внедрить", "Сопровождать"]
+        for n in range(1, 7):
+            with self.subTest(n=n):
+                rects = _diagonal([(name, 10.0) for name in names[:n]], self.PAGE)
+                self.assertEqual(len(rects), n)
+                for x, y, w, h in rects:
+                    self.assertTrue(self.PAGE[0] < x and x + w < self.PAGE[2])
+                    self.assertTrue(self.PAGE[1] < y and y + h < self.PAGE[3])
+                for (x0, y0, w, h), (x1, y1, _, _) in zip(rects, rects[1:]):
+                    self.assertGreaterEqual(x1 - (x0 + w), 16.0)  # right of the one before
+                    self.assertGreaterEqual(y1 - (y0 + h), 12.0)  # and below it
+                widest = max(lq.text_width(word, 10.0) for name in names[:n]
+                             for word in name.split())
+                self.assertGreater(rects[0][2] - 10.0, widest)
+
+    def test_boxes_added_before_any_arrow_are_spread_again_each_time(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = _Build(os.path.join(tmp, "d.rsf"), "Сделать дело")
+            b.context(["вход"], ["правило"], ["исполнитель"], ["результат"])
+            first = b.ed.add_activity(b.top, "Начать")
+            self.assertNotIn("relaid", first)
+            second = b.ed.add_activity(b.top, "Продолжить")
+            self.assertEqual([r["number"] for r in second["relaid"]], ["A1"])
+            b.arrow({"activity": first["id"]}, {"activity": second["id"], "role": "input"},
+                    "задел")
+            third = b.ed.add_activity(b.top, "Закончить")
+            self.assertNotIn("relaid", third)  # an arrow touches the boxes now: they stay
+
+
+class LayingOut(unittest.TestCase):
+
+    def _sheet(self, ed, node="A0"):
+        return next(d for d in ed.snapshot().diagrams() if d.node == node)
+
+    def _crowded(self, path):
+        """Four boxes put by hand in a row along the top, drawn and forked."""
+        b = _Build(path, "Провести олимпиаду")
+        b.context(["заявки"], ["положение"], ["жюри"], ["итоги"])
+        names = ["Подготовить задания", "Провести тур", "Проверить решения", "Подвести итоги"]
+        a = {i + 1: b.ed.add_activity(b.top, n, x=40.0 + 150 * i, y=40.0, width=120.0,
+                                      height=60.0)["id"] for i, n in enumerate(names)}
+        b.arrow({"frame": "control"}, {"activity": a[1], "role": "control"}, "положение")
+        b.arrow({"frame": "mechanism"}, {"activity": a[1], "role": "mechanism"}, "жюри")
+        b.arrow({"frame": "input"}, {"activity": a[1], "role": "input"}, "заявки")
+        for i in (1, 2, 3):
+            b.arrow({"activity": a[i]}, {"activity": a[i + 1], "role": "input"}, f"итог {i}")
+        b.fork("положение", {"activity": a[3], "role": "control"})
+        b.fork("жюри", {"activity": a[2], "role": "mechanism"})
+        b.fork("жюри", {"activity": a[4], "role": "mechanism"})
+        b.arrow({"activity": a[4]}, {"frame": "output"}, "итоги")
+        return b
+
+    def test_a_crowded_sheet_comes_out_reading_better_with_its_arrows_intact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = self._crowded(os.path.join(tmp, "c.rsf"))
+            sheet = self._sheet(b.ed)
+            named = {a.sector_id: a.name for a in sheet.arrows if a.label is not None}
+            findings = sorted((f.rule, f.sheet) for f in rules.check(b.ed.snapshot()))
+            result = b.ed.layout_sheet(sheet.parent_id)
+            self.assertLess(result["layout"]["after"], result["layout"]["before"])
+            self.assertEqual(len(result["moved"]), 4)
+            after = self._sheet(b.ed)
+            self.assertEqual(lq.assess_diagram(after).score, result["layout"]["after"])
+            # The same segments carry the same names, and the model breaks no new rule.
+            still = {a.sector_id: a.name for a in after.arrows if a.label is not None}
+            self.assertEqual(still, named)
+            self.assertEqual(sorted((f.rule, f.sheet) for f in rules.check(b.ed.snapshot())),
+                             findings)
+
+    def test_forks_are_drawn_again_with_their_nodes_shared(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = self._crowded(os.path.join(tmp, "c.rsf"))
+            b.ed.layout_sheet(self._sheet(b.ed).parent_id)
+            sheet = self._sheet(b.ed)
+            meet = {}
+            for a in sheet.arrows:
+                for e, p in ((a.start, a.points[0]), (a.end, a.points[-1])):
+                    if e.kind == "junction":
+                        meet.setdefault(e.node, []).append(p)
+            self.assertTrue(meet)
+            for node, points in meet.items():
+                self.assertEqual(len(points), 3, node)  # one in, two out
+                self.assertEqual(len(set(points)), 1, node)  # all at one point
+
+    def test_a_sheet_that_reads_well_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ed = olympiad(os.path.join(tmp, "o.rsf"))
+            top = self._sheet(ed)
+            ed.layout_sheet(top.parent_id)
+            once = ed.doc.to_bytes()
+            result = ed.layout_sheet(top.parent_id)
+            if not result["moved"]:
+                self.assertEqual(ed.doc.to_bytes(), once)
+            self.assertLessEqual(result["layout"]["after"], result["layout"]["before"])
 
 
 if __name__ == "__main__":

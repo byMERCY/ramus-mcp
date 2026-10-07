@@ -55,8 +55,11 @@ frame of its sheet: draw it there from (or to) the frame and the two are joined.
 Every edit answers with "idef0": the rule findings it brought in and how many it settled; \
 check_model lists them all, each with the call that mends it. check_layout says how well a \
 sheet is drawn (crossings, detours, arrow ends in corners, feedback the wrong way round, names \
-astray) and tidy_sheet straightens a tangled one, keeping only what reads better. Nothing is written until save_model (create_model writes its new file at once); saving \
-over the opened file first copies it to <name>.backup.rsf. Ask the user to close the model in \
+astray); tidy_sheet straightens a tangled one and layout_sheet lays a sheet out afresh, \
+boxes and all - each keeps only what reads better. Add a sheet's boxes before its arrows: \
+while no arrow touches them, add_activity spreads them down the diagonal to fit the page. \
+Nothing is written until save_model (create_model writes its new file at once); saving over \
+the opened file first copies it to <name>.backup.rsf. Ask the user to close the model in \
 Ramus before writing over it.
 """
 
@@ -670,6 +673,25 @@ def tidy_sheet(sheet: str) -> Dict[str, Any]:
     """
     _require()
     return _edited(_Open.editor.tidy_sheet(_sheet_id(sheet)))
+
+
+@mcp.tool(title="Lay a sheet out again", annotations=_EDIT)
+def layout_sheet(sheet: str) -> Dict[str, Any]:
+    """Lay a whole sheet out again - ``sheet`` is the number of the activity it decomposes
+    ("A0") or its id. The boxes go down the IDEF0 diagonal, in their numbered order, sized and
+    spaced to fill the page for as many as there are; then every arrow is drawn again among
+    them - from box to box first, then those from and to the frame, then forks and joins (one
+    line along the bottom with a branch up into each box, say), feedback last - and tidied as
+    tidy_sheet does. Arrows keep their segment ids, names and ties to the other levels. If the
+    sheet does not come out reading better (the measure check_layout reports), it is left as
+    it was. Answers with the boxes moved and the score before and after (``layout``).
+
+    Use it on a sheet whose boxes are badly placed - squeezed into a corner, off the diagonal,
+    too many for the place they were put in - or after adding boxes to a sheet already drawn;
+    tidy_sheet is enough when only the arrows are tangled. render_diagram shows the result.
+    """
+    _require()
+    return _edited(_Open.editor.layout_sheet(_sheet_id(sheet)))
 
 
 @mcp.tool(title="Tidy arrow names", annotations=_EDIT)

@@ -197,10 +197,13 @@ class ModelEditor:
         """Add an activity box to the decomposition of ``parent_id``.
 
         The box goes last in its sheet's order, so it gets the next number (A3 after A1, A2).
-        Without a position it is placed the way IDEF0 lays a sheet out - down the diagonal
-        from the box before it - in the first spot that overlaps nothing. Its look (font,
-        colours, kind of box) is taken from a box already on the sheet, so it matches. Adding
-        the first box under an activity gives that activity its decomposition.
+        Without a position or a size, while no arrow on the sheet touches a box, every box is
+        laid out again down the IDEF0 diagonal, sized and spaced to fill the page for as many
+        boxes as there now are (the answer lists the boxes moved, under ``relaid``). With
+        arrows on the sheet the new box goes down the diagonal from the box before it, in the
+        first spot that overlaps nothing. Its look (font, colours, kind of box) is taken from a
+        box already on the sheet, so it matches. Adding the first box under an activity gives
+        that activity its decomposition.
         """
         name = _clean_name(name, "activity")
         model = self.snapshot()
@@ -218,10 +221,27 @@ class ModelEditor:
         frame = sheet.frame if sheet else model.frame()
         template = siblings[-1] if siblings else parent
 
-        w = float(width) if width else _typical(siblings, "width", 120.0)
-        h = float(height) if height else _typical(siblings, "height", 60.0)
-        if x is None or y is None:
-            x, y = _free_spot(sheet, frame, w, h)
+        relaid = []
+        # Arrows come down onto a new sheet from above before any box is there to take them:
+        # until one touches a box, the boxes are free to be laid out again.
+        bare = sheet is None or not any(e.kind == "activity" for a in sheet.arrows
+                                        for e in (a.start, a.end))
+        if x is None and y is None and width is None and height is None and bare:
+            texts = [(b.name, b.font_size) for b in siblings] + \
+                [(name, template.font_size if siblings else parent.font_size)]
+            rects = _diagonal(texts, frame)
+            for b, r in zip(siblings, rects):
+                if (b.x, b.y, b.width, b.height) != r:
+                    self._set_value("IDEF0/attribute_rectangles", "F_BOUNDS", b.element_id,
+                                    {"X": r[0], "Y": r[1], "WIDTH": r[2], "HEIGHT": r[3]})
+                    relaid.append({"id": b.element_id, "number": b.number, "x": r[0],
+                                   "y": r[1], "width": r[2], "height": r[3]})
+            x, y, w, h = rects[-1]
+        else:
+            w = float(width) if width else _typical(siblings, "width", 120.0)
+            h = float(height) if height else _typical(siblings, "height", 60.0)
+            if x is None or y is None:
+                x, y = _free_spot(sheet, frame, w, h)
         _inside_frame(float(x), float(y), w, h, frame)
 
         parent_row = self._element_row(parent_id)
@@ -231,8 +251,11 @@ class ModelEditor:
                                  keep_element_name=bool(parent_row.get("ELEMENT_NAME")))
         number = (parent.number + str(len(siblings) + 1)) if parent.number != "A0" \
             else "A" + str(len(siblings) + 1)
-        return {"id": new_id, "number": number, "name": name, "parent": parent_id,
-                "x": float(x), "y": float(y), "width": w, "height": h}
+        result = {"id": new_id, "number": number, "name": name, "parent": parent_id,
+                  "x": float(x), "y": float(y), "width": w, "height": h}
+        if relaid:
+            result["relaid"] = relaid
+        return result
 
     def _write_box(self, parent_id: int, qualifier_id: int, name: str, rect,
                    template_id: Optional[int], previous_id: int,
@@ -992,6 +1015,7 @@ class ModelEditor:
         def note(sectors) -> None:
             rerouted.extend(s for s in sectors if s not in rerouted)
 
+        note(self._redraw_parts(sheet_id))
         note(self._reroute(sheet_id, passes))
         note(self._spread_ends(sheet_id))
         note(self._uncross(sheet_id))
@@ -1006,6 +1030,311 @@ class ModelEditor:
         result["layout"] = {"before": before.score, "after": after.score,
                             "faults_left": after.counts()}
         return result
+
+    # ---- forks and joins drawn again as a whole
+
+    def _redraw_parts(self, sheet_id: int, free: bool = False, keep_all: bool = False,
+                      order=None) -> List[int]:
+        """Draw every fork and join on the sheet again from scratch - where it splits (or
+        meets) and every piece of it - and keep the new drawing of each where the sheet reads
+        better for it (always, with ``keep_all``). ``free`` lets the ends on boxes and the
+        frame forget where they were. Returns the segments rewritten."""
+        sheet = self._sheet(sheet_id)
+        parts = _parts(sheet)
+        if order is not None:
+            parts = order(parts)
+        else:
+            parts = [p for p in parts if len(p) > 1]
+        changed: List[int] = []
+        layout = _Layout(sheet)
+        # Drawing everything again: what is still to be drawn is not in the way of what is
+        # drawn first - its old routes ran between the boxes where they were.
+        pending = {a.sector_id for part in parts for a in part} if keep_all else set()
+
+        def forget_pending():
+            for sid in pending:
+                layout.routes.pop(sid, None)
+                layout.labels.pop(sid, None)
+
+        forget_pending()
+        for part in parts:
+            for a in part:
+                pending.discard(a.sector_id)
+            if not self._redrawable(part):
+                for a in part:
+                    layout.routes[a.sector_id] = list(a.points)
+                continue
+            geom = layout.geometry()
+            before = sum(geom.contribution(a.sector_id, own_label=False) for a in part
+                         if a.sector_id in geom.arrows)
+            try:
+                plan = self._plan_part(layout, part, free)
+            except EditError:
+                plan = None
+            if plan is None:
+                for a in part:
+                    layout.routes[a.sector_id] = list(a.points)
+                for k in [k for k in layout.routes if k < 0]:
+                    layout.routes.pop(k)
+                continue
+            trial = _trial_geometry(layout, part, plan)
+            after = sum(trial.contribution(k, own_label=False) for k in plan.keys())
+            if not keep_all and after >= before - _WORTH_IT:
+                for a in part:  # as it was
+                    layout.routes[a.sector_id] = list(a.points)
+                for k in plan.keys():
+                    if k < 0:
+                        layout.routes.pop(k, None)
+                continue
+            written = self._write_plan(sheet_id, part, plan)
+            changed.extend(s for s in written if s not in changed)
+            # Carry on over the sheet as it now is.
+            sheet = self._sheet(sheet_id)
+            layout = _Layout(sheet)
+            forget_pending()
+        return changed
+
+    def _redrawable(self, part) -> bool:
+        """Can these segments be written again here: routes in tables (a Ramus 3 file), drawn
+        on the branch the file is on?"""
+        if self._version() != 2:
+            return False
+        t = self.doc.table("IDEF0/attribute_sector_points")
+        if not t.has("VALUE_BRANCH_ID"):
+            return True
+        branch = str(self.doc.current_branch())
+        ids = {str(a.sector_id) for a in part}
+        return all(r.get("VALUE_BRANCH_ID", branch) == branch for r in t.rows
+                   if r.get("ELEMENT_ID") in ids)
+
+    def _plan_part(self, layout: "_Layout", part, free: bool) -> Optional["_Plan"]:
+        """A new drawing of one arrow - a fork (one source, branching to several ends), a
+        join (several sources meeting on the way to one end), or a single segment - routed
+        among the rest of the sheet, which is left in ``layout`` with the new routes in it
+        under the plan's keys. None for anything else (a fork after a join, a loop): that is
+        left as it is."""
+        nodes: Dict[int, Dict[str, list]] = {}
+        for a in part:
+            for which, e in (("out", a.start), ("in", a.end)):
+                if e.kind == "junction" and e.node is not None:
+                    nodes.setdefault(e.node, {"in": [], "out": []})[which].append(a)
+        sources = [a for a in part if a.start.kind != "junction"]
+        targets = [a for a in part if a.end.kind != "junction"]
+        if not sources or not targets:
+            return None
+        if len(part) == 1:
+            kind = "single"
+        elif len(sources) == 1 and all(len(n["in"]) == 1 for n in nodes.values()):
+            kind = "fork"
+        elif len(targets) == 1 and all(len(n["out"]) == 1 for n in nodes.values()):
+            kind = "join"
+        else:
+            return None
+        for a in part:
+            layout.routes.pop(a.sector_id, None)
+        plan = _Plan(next_key=-1)
+        if kind == "join":
+            # Mirror of a fork: one end, several starts.
+            end_seg = targets[0]
+            end = layout.anchor_from(end_seg.end, "end", end_seg.points, free=free)
+            starts = sorted(sources, key=lambda a: _number_of(layout, a.start))
+            first = starts[0]
+            begin = layout.anchor_from(first.start, "start", first.points, free=free)
+            pts = layout.plan(begin, end)
+            main = plan.add(pts, ("end", first, "start"), ("end", end_seg, "end"))
+            layout.routes[main] = pts
+            rest = starts[1:]
+            rest.sort(key=lambda a: -_reach(layout.anchor_from(a.start, "start", a.points,
+                                                                  free=free)))
+            for a in rest:
+                anchor = layout.anchor_from(a.start, "start", a.points, free=free)
+                trunk, at, k, pts = layout.plan_branch(plan.trunks(layout), anchor, reverse=True)
+                node = plan.split(layout, trunk.sector_id, k, at)
+                key = plan.add(pts, ("end", a, "start"), ("node", node))
+                layout.routes[key] = pts
+            return plan
+        source = sources[0]
+        begin = layout.anchor_from(source.start, "start", source.points, free=free)
+        ends = sorted(targets, key=lambda a: _number_of(layout, a.end))
+        first = ends[0]
+        end = layout.anchor_from(first.end, "end", first.points, free=free)
+        pts = layout.plan(begin, end)
+        main = plan.add(pts, ("end", source, "start"), ("end", first, "end"))
+        layout.routes[main] = pts
+        rest = ends[1:]
+        rest.sort(key=lambda a: _reach(layout.anchor_from(a.end, "end", a.points, free=free)))
+        for a in rest:
+            anchor = layout.anchor_from(a.end, "end", a.points, free=free)
+            trunk, at, k, pts = layout.plan_branch(plan.trunks(layout), anchor)
+            node = plan.split(layout, trunk.sector_id, k, at)
+            key = plan.add(pts, ("node", node), ("end", a, "end"))
+            layout.routes[key] = pts
+        return plan
+
+    def _write_plan(self, sheet_id: int, part, plan: "_Plan") -> List[int]:
+        """Write a new drawing of one arrow over the segments it replaces: each piece goes to
+        the segment that had its end on a box or the frame (so the ids an agent knows, the
+        names and the ties to the other level stay), the pieces between nodes to the segments
+        left over - new segments of the same flow if there are too few, the spare ones
+        deleted. Nodes are where pieces meet; the points there share their ordinates."""
+        doc = self.doc
+        battr = {"start": self._require_attribute("F_SECTOR_BORDER_START"),
+                 "end": self._require_attribute("F_SECTOR_BORDER_END")}
+        border_cols = ("BORDER_TYPE", "FUNCTION", "FUNCTION_TYPE", "CROSSPOINT", "TUNNEL_SOFT")
+
+        def border(sector, which):
+            row = self._live_value_row("IDEF0/attribute_sector_borders", battr[which], sector)
+            return {c: int(row[c]) for c in border_cols if row is not None and row.get(c)
+                    not in (None, "")} if row is not None else None
+
+        ends = {(a.sector_id, w): border(a.sector_id, w) for a in part for w in ("start", "end")}
+        old_nodes = sorted({v["CROSSPOINT"] for (s, w), v in ends.items() if v is not None and
+                            v.get("CROSSPOINT", -1) >= 0 and
+                            getattr(next(a for a in part if a.sector_id == s),
+                                    w).kind == "junction"})
+
+        # Which segment each piece is written as.
+        assigned: Dict[int, int] = {}
+        used = set()
+        for key, piece in plan.pieces.items():
+            for spec in (piece.start, piece.end):
+                if spec[0] == "end" and spec[1].sector_id not in used:
+                    assigned[key] = spec[1].sector_id
+                    used.add(spec[1].sector_id)
+                    break
+        spare = [a.sector_id for a in part if a.sector_id not in used]
+        for key in plan.pieces:
+            if key not in assigned:
+                assigned[key] = spare.pop(0) if spare else self._new_segment_like(
+                    part[0].sector_id, sheet_id)
+        if spare:
+            self._remove_elements(set(spare))
+
+        node_ids = {}
+        ordinates = {}
+        for n in plan.node_keys():
+            node_ids[n] = old_nodes.pop(0) if old_nodes else doc.new_crosspoint()
+            ordinates[n] = (doc.new_ordinate(), doc.new_ordinate())
+
+        def end_values(spec):
+            if spec[0] == "node":
+                return {"BORDER_TYPE": -1, "FUNCTION": -1, "FUNCTION_TYPE": -1,
+                        "CROSSPOINT": node_ids[spec[1]], "TUNNEL_SOFT": 0}
+            values = ends[(spec[1].sector_id, spec[2])]
+            return dict(values) if values is not None else None
+
+        points_table = doc.table("IDEF0/attribute_sector_points")
+        pattr = self._require_attribute("F_SECTOR_POINTS")
+        written = []
+        borders = doc.table("IDEF0/attribute_sector_borders")
+        for key, piece in plan.pieces.items():
+            sector = assigned[key]
+            for which, spec in (("start", piece.start), ("end", piece.end)):
+                values = end_values(spec)
+                row = self._live_value_row("IDEF0/attribute_sector_borders", battr[which],
+                                           sector)
+                if values is None:  # an end attached to nothing has no row
+                    if row is not None:
+                        borders.remove(row)
+                elif row is not None:
+                    self._set_row("IDEF0/attribute_sector_borders", row, values)
+                else:
+                    self._add_value("IDEF0/attribute_sector_borders",
+                                    "F_SECTOR_BORDER_" + which.upper(), sector, values)
+            for r in points_table.where(ATTRIBUTE_ID=pattr, ELEMENT_ID=sector):
+                points_table.remove(r)
+            pts = piece.points
+            first = last = None
+            if piece.start[0] == "node":
+                xo, yo = ordinates[piece.start[1]]
+                first = (xo, yo, _point_type(pts[0], pts[1]))
+            if piece.end[0] == "node":
+                xo, yo = ordinates[piece.end[1]]
+                last = (xo, yo, _point_type(pts[-2], pts[-1]))
+            self._write_points(sector, pts, first, last)
+            written.append(sector)
+        # Names go back beside their routes once everything is drawn.
+        fresh = self._sheet(sheet_id)
+        layout = _Layout(fresh)
+        for a in fresh.arrows:
+            if a.sector_id in written:
+                self._relabel(layout, a, a.points, force=True)
+        return written
+
+    def _new_segment_like(self, template: int, sheet_id: int) -> int:
+        """A new segment of the same flow, on the same sheet, with the same look as
+        ``template`` and no name of its own - what a fork adds."""
+        doc = self.doc
+        new = doc.new_element_id()
+        doc.add_row("elements", {"ELEMENT_ID": new, "ELEMENT_NAME": "",
+                                 "QUALIFIER_ID": self._require_qualifier("F_SECTORS")},
+                    lenient=True)
+        self._add_link(new, "F_FUNCTION_SECTOR", sheet_id)
+        stream = self._live_value_row("Core/attribute_other_elements",
+                                      self._require_attribute("F_SECTOR_STREAM"), template)
+        if stream is not None:
+            self._add_link(new, "F_SECTOR_STREAM", int(stream["OTHER_ELEMENT"]))
+        look = self._live_value_row("IDEF0/attribute_sectors",
+                                    self._require_attribute("F_SECTOR_ATTRIBUTE"), template)
+        values = {k: v for k, v in (look or {}).items()
+                  if k not in ("ELEMENT_ID", "ATTRIBUTE_ID", "VALUE_BRANCH_ID")}
+        values.pop("ALTERNATIVE_TEXT", None)
+        self._add_value("IDEF0/attribute_sectors", "F_SECTOR_ATTRIBUTE", new, values)
+        self._add_value("IDEF0/attribute_sector_properties", "F_SECTOR_PROPERTIES", new,
+                        _NO_LABEL)
+        return new
+
+    def layout_sheet(self, sheet_id: int) -> Dict[str, object]:
+        """Lay a whole sheet out again: the boxes down the IDEF0 diagonal, sized and spaced to
+        fill the page for as many as there are (in their numbered order), and every arrow drawn
+        again among them - the arrows from box to box first, then those from and to the frame,
+        then the forks and joins (one line along the bottom, say, with a branch up into each
+        box), feedback last, over the top or under the bottom - then tidied as tidy_sheet
+        does. That is weighed against tidying the arrows with the boxes where they are, and
+        against the sheet as it is: what reads best is kept. Arrows keep their segment ids,
+        names and ties to the other levels."""
+        if self._version() != 2:
+            raise EditError("A sheet can be laid out again in files in the Ramus 3 format only.")
+        sheet = self._sheet(sheet_id)
+        if not sheet.activities:
+            raise EditError(f"Sheet {sheet.node} has no boxes to lay out.")
+        before = _Layout(sheet).geometry().assess()
+        saved = self.doc.checkpoint()
+        tidied = self.tidy_sheet(sheet_id)
+        tidied_state = self.doc.checkpoint()
+        self.doc.restore(saved)
+        rects = _diagonal([(a.name, a.font_size) for a in sheet.activities], sheet.frame)
+        moved = []
+        for a, r in zip(sheet.activities, rects):
+            if (a.x, a.y, a.width, a.height) != r:
+                self._set_value("IDEF0/attribute_rectangles", "F_BOUNDS", a.element_id,
+                                {"X": r[0], "Y": r[1], "WIDTH": r[2], "HEIGHT": r[3]})
+                moved.append({"id": a.element_id, "number": a.number, "x": r[0], "y": r[1],
+                              "width": r[2], "height": r[3]})
+        boxes = {a.element_id: r for a, r in zip(sheet.activities, rects)}
+        order = {a.element_id: i for i, a in enumerate(sheet.activities)}
+        redrawn = self._redraw_parts(sheet_id, free=True, keep_all=True,
+                                     order=lambda parts: _drawing_order(parts, boxes, order))
+        rerouted = list(redrawn)
+        for step in (self._reroute(sheet_id, 3), self._spread_ends(sheet_id),
+                     self._uncross(sheet_id)):
+            rerouted.extend(x for x in step if x not in rerouted)
+        labels = self.tidy_labels(sheet_id, everything=True)["labels_moved"]
+        after = _Layout(self._sheet(sheet_id)).geometry().assess()
+        if after.score >= tidied["layout"]["after"]:
+            # Better with the boxes where they were: the tidied sheet (or the sheet as it was,
+            # if tidying found nothing either).
+            self.doc.restore(tidied_state)
+            result = dict(tidied, moved=[])
+            result["layout"] = dict(tidied["layout"], laid_out_again=after.score)
+            result["note"] = ("The boxes read better where they are; the arrows were tidied."
+                              if tidied["rerouted"] or tidied["labels_moved"] else
+                              "Laid out again the sheet read no better; it is as it was.")
+            return result
+        return {"sheet": sheet.node, "moved": moved, "rerouted": rerouted,
+                "labels_moved": labels,
+                "layout": {"before": before.score, "after": after.score,
+                           "faults_left": after.counts()}}
 
     def _reroute(self, sheet_id: int, passes: int) -> List[int]:
         """Each arrow routed again with the rest where they are; the new route kept if the
@@ -1160,9 +1489,10 @@ class ModelEditor:
                         changed.append(s)
         return changed
 
-    def tidy_labels(self, sheet_id: int) -> Dict[str, object]:
+    def tidy_labels(self, sheet_id: int, everything: bool = False) -> Dict[str, object]:
         """Move every arrow name on a sheet that is in the way of something - on a box, another
-        name or a line, off the sheet, or lost far from its arrow - back beside its arrow."""
+        name or a line, off the sheet, or lost far from its arrow - back beside its arrow; with
+        ``everything``, every name, wherever it is."""
         sheet = next((d for d in self.snapshot().diagrams() if d.parent_id == sheet_id), None)
         if sheet is None:
             raise EditError(f"Activity {sheet_id} has no decomposition sheet.")
@@ -1170,7 +1500,7 @@ class ModelEditor:
             raise EditError("Arrow names can be moved in files in the Ramus 3 format only.")
         layout = _Layout(sheet)
         moved = [a.sector_id for a in sheet.arrows
-                 if a.has_route and self._relabel(layout, a, a.points)]
+                 if a.has_route and self._relabel(layout, a, a.points, force=everything)]
         return {"sheet": sheet.node, "labels_moved": moved}
 
     def _free_labels(self, sheet_id: int, routes) -> List[int]:
@@ -1188,24 +1518,29 @@ class ModelEditor:
                     moved.append(a.sector_id)
         return moved
 
-    def _relabel(self, layout: "_Layout", arrow, points) -> bool:
+    def _relabel(self, layout: "_Layout", arrow, points, force: bool = False) -> bool:
         """Keep an arrow's name where it is if it is still clear and close to the route, or
-        put it beside the route again; a zig-zag tying it to the line is pointed at the route's
-        nearest point either way. True if the name moved."""
+        put it beside the route again (always, with ``force`` - for a route drawn afresh); a
+        name put back beside its line loses its zig-zag, one that has to stand off gets one,
+        pointed at the route's nearest point. True if the name moved."""
         if arrow.label is None:
             return False
         values: Dict[str, object] = {}
         box = layout.labels.get(arrow.sector_id)
         tilde = arrow.label.tilde_pos is not None
-        moved = box is None or not layout.label_fits(box, points, arrow.sector_id, tilde)
+        moved = force or box is None or             not layout.label_fits(box, points, arrow.sector_id, tilde)
         if moved:
             box, far = layout.place_label(arrow.name, arrow.font_size, points,
                                           exclude=arrow.sector_id)
             layout.labels[arrow.sector_id] = box
             values.update(TEXT_X=box[0], TEXT_Y=box[1], TEXT_WIDTH=box[2], TEXT_HIEGHT=box[3])
-            if far and not tilde:
-                tilde = True
-                values["SHOW_TILDA"] = 1
+            if far != tilde:
+                tilde = far
+                values["SHOW_TILDA"] = 1 if far else 0
+                if far:
+                    layout.tildes.add(arrow.sector_id)
+                else:
+                    layout.tildes.discard(arrow.sector_id)
         if tilde:
             values["TILDA_POS"] = _share_nearest(points, box)
         if values:
@@ -1465,6 +1800,57 @@ _EMPTY_V1 = struct.pack("<iii", 1, 0, 0)
 _GAP = 24.0  # room kept between boxes, and between a box and the frame
 
 
+# The IDEF0 diagonal, fitted to the page: the boxes' size and the gaps between them.
+# Tried in turn until the boxes fit: the room left round them for the frame's arrows and their
+# names (left and right, top and bottom), and the least gap between one box and the next across
+# - a narrower gap before a narrower margin, since the names of the arrows coming in and going
+# out need the margin.
+_FITS = ((70.0, 50.0, 30.0, 16.0), (70.0, 50.0, 20.0, 12.0), (55.0, 45.0, 20.0, 12.0),
+         (45.0, 35.0, 16.0, 12.0), (35.0, 30.0, 16.0, 8.0))
+_BOX_W = (80.0, 150.0)  # narrowest and widest a box is made
+_BOX_H = (40.0, 75.0)
+_GAP_X = (40.0, 100.0)  # wished for and most between one box and the next, across
+_GAP_Y = (24.0, 70.0)  # wished for and most, down
+
+
+def _box_needs(texts, width: float) -> float:
+    """How tall a box ``width`` wide must be for the longest of these names to fit, with the
+    strip along the bottom where its number goes."""
+    tallest = 0.0
+    for name, size in texts:
+        lines = len(wrap(name, max(width - 10.0, size), size))
+        tallest = max(tallest, lines * size * 1.2)
+    return tallest + NUMBER_SIZE + 12.0
+
+
+def _diagonal(texts, frame) -> List[Tuple[float, float, float, float]]:
+    """Where ``len(texts)`` boxes go down the IDEF0 diagonal, from top left to bottom right,
+    one size for all, filling the page: as big as there is room for (and no bigger than looks
+    right), never narrower than the longest word of a name nor lower than its lines, with the
+    gaps between them wide enough for arrows to turn in - and the margins round them made
+    narrower when that is what it takes. ``texts`` are the names and font sizes, in order."""
+    n = len(texts)
+    if n == 0:
+        return []
+    left, top, right, bottom = frame
+    longest = max(text_width(word, size) for name, size in texts for word in name.split() or [""])
+    need_w = max(_BOX_W[0], longest + 14.0)
+    for mx, my, least_x, least_y in _FITS:
+        aw, ah = right - left - 2 * mx, bottom - top - 2 * my
+        w = max(need_w, min(_BOX_W[1], (aw - (n - 1) * _GAP_X[0]) / n))
+        h = min(_BOX_H[1], max(w * 0.5, _BOX_H[0]), (ah - (n - 1) * _GAP_Y[0]) / n)
+        h = max(h, _box_needs(texts, w), _BOX_H[0])
+        if n * w + (n - 1) * least_x <= aw + 1e-6 and n * h + (n - 1) * least_y <= ah + 1e-6:
+            break
+    gx = min(_GAP_X[1], (aw - n * w) / (n - 1)) if n > 1 else 0.0
+    gy = min(_GAP_Y[1], (ah - n * h) / (n - 1)) if n > 1 else 0.0
+    span_w, span_h = n * w + (n - 1) * gx, n * h + (n - 1) * gy
+    x0 = left + (right - left - span_w) / 2
+    y0 = top + (bottom - top - span_h) / 2
+    return [(round(x0 + i * (w + gx), 2), round(y0 + i * (h + gy), 2), round(w, 2), round(h, 2))
+            for i in range(n)]
+
+
 def _typical(boxes, attribute: str, default: float) -> float:
     """The median size of the boxes already on a sheet, so a new one matches them."""
     values = sorted(getattr(b, attribute) for b in boxes if getattr(b, attribute) > 0)
@@ -1680,6 +2066,139 @@ def _crossing_pairs(routes, arrows) -> List[Tuple[int, int]]:
     return out
 
 
+def _parts(sheet) -> List[list]:
+    """The sheet's drawn segments grouped by what reads as one arrow: the segments of one flow
+    that meet at nodes on this sheet (the reader numbers them alike), in the order drawn."""
+    groups: Dict[int, list] = {}
+    for a in sheet.arrows:
+        if a.has_route and a.geometry != "stub":
+            groups.setdefault(a.flow, []).append(a)
+    return list(groups.values())
+
+
+def _drawing_order(parts, boxes, order) -> List[list]:
+    """The order to draw a sheet's arrows in, so the ones that matter most get the best
+    routes: from one box on to the next first (by box), then those from and to the frame,
+    then forks and joins, feedback - back to a box further left - last."""
+    def centre_x(box_id):
+        x, _, w, _ = boxes[box_id]
+        return x + w / 2
+
+    def rank(part):
+        first = min(order.get(e.activity_id, 99) for a in part for e in (a.start, a.end)
+                    if e.kind == "activity") if any(
+            e.kind == "activity" for a in part for e in (a.start, a.end)) else 99
+        if len(part) > 1:
+            return (2, first)
+        a = part[0]
+        if a.start.kind == "activity" and a.end.kind == "activity" and \
+                a.start.activity_id in boxes and a.end.activity_id in boxes:
+            if centre_x(a.end.activity_id) < centre_x(a.start.activity_id):
+                return (3, first)
+            return (0, first)
+        return (1, first)
+
+    return sorted(parts, key=rank)
+
+
+def _number_of(layout, end) -> Tuple[int, str]:
+    """Sorting key for an arrow's end: the box it is on, in the sheet's order (the frame
+    after every box)."""
+    if end.kind == "activity" and end.activity_id in layout.order:
+        return (layout.order[end.activity_id], end.side or "")
+    return (len(layout.order) + 1, end.side or "")
+
+
+def _reach(anchor: "_Anchor") -> float:
+    """How far into the sheet an end lies along the way an arrow arrives at it - the deepest
+    first, so the branches drawn later can leave the earlier ones' lines straight on (one
+    line along the bottom with arrows going up from it into every box, rather than each its
+    own way round)."""
+    x, y, w, h = anchor.rect
+    cx, cy = x + w / 2, y + h / 2
+    return anchor.direction[0] * cx + anchor.direction[1] * cy
+
+
+class _Key:
+    """A piece of a plan, posing as a segment for _Layout.plan_branch."""
+
+    def __init__(self, key: int, points):
+        self.sector_id = key
+        self.points = points
+
+
+@dataclass
+class _Piece:
+    points: list
+    start: tuple  # ("end", segment, "start" | "end") - that segment's end, kept - or ("node", n)
+    end: tuple
+
+
+@dataclass
+class _Plan:
+    """A new drawing of one arrow: its pieces, keyed by plan keys (negative, so they do not
+    clash with segment ids in a _Layout's routes), and the nodes they meet at."""
+
+    next_key: int
+    pieces: Dict[int, _Piece] = None
+    nodes: int = 0
+
+    def __post_init__(self):
+        self.pieces = {}
+
+    def add(self, points, start, end) -> int:
+        key = self.next_key
+        self.next_key -= 1
+        self.pieces[key] = _Piece(list(points), start, end)
+        return key
+
+    def keys(self):
+        return list(self.pieces)
+
+    def node_keys(self):
+        return sorted({spec[1] for p in self.pieces.values() for spec in (p.start, p.end)
+                       if spec[0] == "node"})
+
+    def trunks(self, layout) -> List[_Key]:
+        return [_Key(k, layout.routes.get(k, p.points)) for k, p in self.pieces.items()]
+
+    def split(self, layout, key: int, k: int, at) -> int:
+        """Cut piece ``key`` at point ``at`` on its straight piece number ``k``: it now ends
+        on a new node there, and a new piece carries on from the node to where it ended."""
+        piece = self.pieces[key]
+        pts = layout.routes.get(key, piece.points)
+        at = (float(at[0]), float(at[1]))
+        head = rt.simplify(list(pts[:k + 1]) + [at])
+        tail = rt.simplify([at] + list(pts[k + 1:]))
+        node = self.nodes
+        self.nodes += 1
+        old_end = piece.end
+        piece.points = head
+        piece.end = ("node", node)
+        layout.routes[key] = head
+        new = self.add(tail, ("node", node), old_end)
+        layout.routes[new] = tail
+        return node
+
+
+def _trial_geometry(layout, part, plan) -> "lq.SheetGeometry":
+    """The sheet as ``layout`` holds it - the plan's routes in, the part's old ones out - to
+    measure the plan by."""
+    geom = layout.geometry()
+    flow = part[0].flow
+    for a in part:
+        geom.arrows.pop(a.sector_id, None)
+    for key, piece in plan.pieces.items():
+        start = lq.end_info(piece.start[1].start if piece.start[2] == "start"
+                            else piece.start[1].end) if piece.start[0] == "end" \
+            else lq.EndInfo("junction")
+        end = lq.end_info(piece.end[1].end if piece.end[2] == "end" else piece.end[1].start) \
+            if piece.end[0] == "end" else lq.EndInfo("junction")
+        geom.arrows[key] = lq.ArrowGeom(key, flow, list(layout.routes.get(key, piece.points)),
+                                        start, end)
+    return geom
+
+
 def _even_slots(box, side: int, n: int, avoid=()) -> List[float]:
     """Where ``n`` ends go on a side of a box, evenly spaced - its half, thirds, quarters ...
     - unless one would sit in ``avoid`` (the box's number): then evenly over what is left."""
@@ -1758,6 +2277,7 @@ class _Layout:
         self.frame = (left, top, right - left, bottom - top)
         self.boxes = {a.element_id: _box(a) for a in sheet.activities}
         self.numbers = {a.element_id: a.number for a in sheet.activities}
+        self.order = {a.element_id: i for i, a in enumerate(sheet.activities)}
         self.routes = {a.sector_id: list(a.points) for a in sheet.arrows if a.has_route}
         self.ends = {a.sector_id: (a.start, a.end) for a in sheet.arrows}
         self.labels = {a.sector_id: _label_rect(a.label) for a in sheet.arrows
@@ -1775,7 +2295,8 @@ class _Layout:
         arrows = [lq.ArrowGeom(s, self.flows.get(s, s), list(pts), lq.end_info(self.ends[s][0]),
                                lq.end_info(self.ends[s][1]), self.labels.get(s),
                                s in self.tildes, self.names_of.get(s, ""))
-                  for s, pts in self.routes.items() if s not in self.stubs and len(pts) >= 2]
+                  for s, pts in self.routes.items()
+                  if s in self.ends and s not in self.stubs and len(pts) >= 2]
         return lq.SheetGeometry(boxes, arrows, self.frame, self.texts)
 
     def number_zone(self, box_id: int, side: int) -> Tuple[Tuple[float, float], ...]:
@@ -1834,22 +2355,24 @@ class _Layout:
                        "frame", corner=2 * rt.MARGIN)
 
     def anchor_from(self, end, which: str, points, moved: Optional[int] = None,
-                    old_rect=None) -> _Anchor:
+                    old_rect=None, free: bool = False) -> _Anchor:
         """The anchor for one end of an arrow being redrawn. An end on a box or the frame may
         slide along its side (where it was is one of the places tried - scaled to the new size
-        if it is on the box that ``moved``); an end on a node, or one left open, stays put."""
+        if it is on the box that ``moved``; not at all if ``free``, for a sheet laid out
+        afresh); an end on a node, or one left open, stays put."""
         p = points[0] if which == "start" else points[-1]
         if end.kind in ("activity", "frame") and end.side in _SIDE_NUMBERS and \
                 (end.kind == "frame" or end.activity_id in self.boxes):
             side = _SIDE_NUMBERS[end.side]
             axis = 1 if side in (rt.SIDE_LEFT, rt.SIDE_RIGHT) else 0
-            keep = p[axis]
+            keep = None if free else p[axis]
             out = rt.OUTWARD[side]
             if end.kind == "frame":
                 return _Anchor(self.frame, side, _back(out) if which == "start" else out,
                                "frame", corner=2 * rt.MARGIN, keep=keep)
             rect = self.boxes[end.activity_id]
-            if end.activity_id == moved and old_rect is not None and old_rect[axis + 2] > 0:
+            if keep is not None and end.activity_id == moved and old_rect is not None \
+                    and old_rect[axis + 2] > 0:
                 share = (keep - old_rect[axis]) / old_rect[axis + 2]
                 keep = rect[axis] + rect[axis + 2] * min(1.0, max(0.0, share))
             return self._box_anchor(end.activity_id, side, out if which == "start" else _back(out),

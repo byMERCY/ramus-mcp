@@ -56,6 +56,7 @@
     {"name": "delete_arrow", "description": "Delete an arrow segment."},
     {"name": "join_levels", "description": "Tie an arrow to its continuation on the level below."},
     {"name": "tidy_sheet", "description": "Lay a diagram's arrows out again, cleaner."},
+    {"name": "layout_sheet", "description": "Lay a diagram out afresh: boxes down the diagonal, every arrow drawn again."},
     {"name": "tidy_labels", "description": "Move arrow names that are in the way."},
     {"name": "save_model", "description": "Write the changes to the model file, or to a copy."}
   ],
