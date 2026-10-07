@@ -52,6 +52,8 @@
     {"name": "rename_flow", "description": "Rename what an arrow carries, on every level."},
     {"name": "add_activity", "description": "Add a box to a decomposition: an activity, or on a data flow diagram an external entity, a data store or a role."},
     {"name": "add_arrow", "description": "Draw an arrow - between boxes, to or from the frame, as a fork or a join - routed the IDEF0 way."},
+    {"name": "style_activity", "description": "Colour a box, set its font and type."},
+    {"name": "style_arrow", "description": "Colour an arrow, set its width, dashes and font."},
     {"name": "move_activity", "description": "Move or resize a box; its arrows follow."},
     {"name": "delete_activity", "description": "Delete a box with its arrows."},
     {"name": "delete_arrow", "description": "Delete an arrow segment."},

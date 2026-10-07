@@ -153,6 +153,14 @@ _DECORATED = {-10: ("way", 0), -11: ("way", 1), -12: ("way", 2),
               -20: ("arrowed", 0), -21: ("arrowed", 1), -22: ("arrowed", 2)}
 
 
+def decorated_code(stroke: Stroke) -> Optional[int]:
+    """The code a decorated stroke is stored by, or None for a plain one."""
+    for code, (kind, level) in _DECORATED.items():
+        if stroke.kind == kind and stroke.level == level:
+            return code
+    return None
+
+
 def _read_stroke(c: _Cursor, mem: _Memory) -> Stroke:
     if c.flag():  # "is new": an explicit java.awt.BasicStroke
         width = c.f64()
@@ -237,9 +245,11 @@ def decode_sector_style(data: bytes) -> SectorStyle:
 
 def encode_sector_style(width: float = 1.0, rgb: Tuple[int, int, int] = (0, 0, 0),
                         font: Tuple[str, int, int] = ("Dialog", 10, 0),
-                        dash: Optional[Tuple[float, ...]] = None) -> bytes:
+                        dash: Optional[Tuple[float, ...]] = None,
+                        stroke_code: Optional[int] = None) -> bytes:
     """A sector's ``VISUAL_ATTRIBUTES`` - the inverse of :func:`decode_sector_style` for a
-    self-contained style: a new stroke (round cap, mitre join), a new font, a new colour."""
+    self-contained style: a new stroke (round cap, mitre join), a new font, a new colour.
+    ``stroke_code`` writes one of Ramus's decorated strokes instead (see decorated_code)."""
     out = bytearray()
 
     def i32(v: int) -> None:
@@ -251,18 +261,22 @@ def encode_sector_style(width: float = 1.0, rgb: Tuple[int, int, int] = (0, 0, 0
     def flag(v: bool) -> None:
         out.append(1 if v else 0)
 
-    flag(True)  # stroke: new
-    f64(width)
-    i32(2)  # cap: java.awt.BasicStroke.CAP_SQUARE, what Ramus writes
-    i32(0)  # join: JOIN_MITER
-    f64(0.0)  # dash phase
-    f64(10.0)  # miter limit
-    if dash:
-        i32(len(dash))
-        for d in dash:
-            f64(d)
+    if stroke_code is not None:
+        flag(False)  # stroke: not new - one of the decorated ones, by its code
+        i32(stroke_code)
     else:
-        i32(-1)
+        flag(True)  # stroke: new
+        f64(width)
+        i32(2)  # cap: java.awt.BasicStroke.CAP_SQUARE, what Ramus writes
+        i32(0)  # join: JOIN_MITER
+        f64(0.0)  # dash phase
+        f64(10.0)  # miter limit
+        if dash:
+            i32(len(dash))
+            for d in dash:
+                f64(d)
+        else:
+            i32(-1)
     flag(False)  # font: not null
     flag(True)  # font: new
     name = font[0].encode("utf-8")

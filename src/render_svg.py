@@ -54,9 +54,10 @@ def _element(item: Item) -> str:
         return f'<polygon points="{_points(item.points)}" fill="{item.fill}"/>'
     if isinstance(item, Dot):
         return f'<circle cx="{_num(item.x)}" cy="{_num(item.y)}" r="{_num(item.r)}" fill="{item.fill}"/>'
+    weight = ' font-weight="bold"' if item.bold else ""
     return (
         f'<text x="{_num(item.x)}" y="{_num(item.y)}" text-anchor="{item.anchor}" '
-        f'font-size="{_num(item.size)}" fill="{item.color}">{escape(item.text)}</text>'
+        f'font-size="{_num(item.size)}"{weight} fill="{item.color}">{escape(item.text)}</text>'
     )
 
 

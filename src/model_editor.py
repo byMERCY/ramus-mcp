@@ -23,6 +23,7 @@ try:
     from . import blank_model
     from . import layout_quality as lq
     from . import router as rt
+    from . import styles as st
     from . import visual_data as vd
     from .rsf_document import RsfDocument, Row
     from .ramus_rsf import (Activity, FRAME_BOTTOM_RAMUS3, FRAME_LEFT, FRAME_RIGHT,
@@ -32,6 +33,7 @@ except ImportError:  # pragma: no cover - script execution
     import blank_model
     import layout_quality as lq
     import router as rt
+    import styles as st
     import visual_data as vd
     from rsf_document import RsfDocument, Row
     from ramus_rsf import (Activity, FRAME_BOTTOM_RAMUS3, FRAME_LEFT, FRAME_RIGHT,
@@ -214,7 +216,8 @@ class ModelEditor:
     def add_activity(self, parent_id: int, name: str, x: Optional[float] = None,
                      y: Optional[float] = None, width: Optional[float] = None,
                      height: Optional[float] = None, kind: str = "process",
-                     owner: Optional[int] = None) -> Dict[str, object]:
+                     owner: Optional[int] = None,
+                     style: Optional[Dict[str, object]] = None) -> Dict[str, object]:
         """Add an activity box to the decomposition of ``parent_id``.
 
         The box goes last in its sheet's order, so it gets the next number (A3 after A1, A2).
@@ -332,6 +335,142 @@ class ModelEditor:
             result["kind"] = kind
         if relaid:
             result["relaid"] = relaid
+        if style:
+            result["style"] = self.style_activity(new_id, **_style_args(style, _BOX_STYLE))
+        return result
+
+    # ------------------------------------------------------------ the look of things
+
+    def style_activity(self, element_id: int, fill: Optional[str] = None,
+                       color: Optional[str] = None, font_size: Optional[float] = None,
+                       bold: Optional[bool] = None,
+                       block_type: Optional[str] = None) -> Dict[str, object]:
+        """Give a box a look: ``fill`` its background, ``color`` its outline and name (a
+        name, #rrggbb or r,g,b - see styles), ``font_size`` and ``bold`` its name's type,
+        ``block_type`` what Ramus calls it (process, operation, action ... - a label, not a
+        shape). What is not given stays as it is."""
+        act = self.snapshot().activities().get(element_id)
+        if act is None or not act.has_box:
+            raise EditError(f"There is no activity box with id {element_id}.")
+        done: Dict[str, object] = {"id": element_id, "number": act.number}
+        try:
+            for column_attr, value, key in (("F_BACKGROUND", fill, "fill"),
+                                            ("F_FOREGROUND", color, "color")):
+                if value is None:
+                    continue
+                rgb = st.parse_color(value)
+                values = {"COLOR": st.argb(rgb)}
+                if not self._set_value("IDEF0/attribute_colors", column_attr, element_id,
+                                       values):
+                    self._add_value("IDEF0/attribute_colors", column_attr, element_id, values)
+                done[key] = st.hex_of(rgb)
+            if font_size is not None or bold is not None:
+                attr = self._require_attribute("F_FONT")
+                row = self._live_value_row("IDEF0/attribute_fonts", attr, element_id) or {}
+                size = int(round(float(font_size))) if font_size is not None else \
+                    int(row.get("SIZE") or 10)
+                if not 5 <= size <= 48:
+                    raise EditError("A box's font size is between 5 and 48.")
+                style = int(row.get("STYLE") or 0)
+                if bold is not None:
+                    style = (style | 1) if bold else (style & ~1)
+                values = {"NAME": row.get("NAME") or "Dialog", "SIZE": size, "STYLE": style}
+                if row:
+                    self._set_row("IDEF0/attribute_fonts", row, values)
+                else:
+                    self._add_value("IDEF0/attribute_fonts", "F_FONT", element_id, values)
+                done.update(font_size=size, bold=bool(style & 1))
+            if block_type is not None:
+                if act.kind != "process":
+                    raise EditError(f"A {act.kind} keeps its kind; block_type is an activity's.")
+                key = str(block_type).strip().lower().replace(" ", "_")
+                if key not in st.BLOCK_TYPES:
+                    raise EditError(f"A block type is one of {', '.join(st.BLOCK_TYPES)}.")
+                values = {"TYPE": st.BLOCK_TYPES[key]}
+                if not self._set_value("IDEF0/attribute_function_types", "F_TYPE", element_id,
+                                       values):
+                    self._add_value("IDEF0/attribute_function_types", "F_TYPE", element_id,
+                                    values)
+                done["block_type"] = key
+        except st.StyleError as exc:
+            raise EditError(str(exc)) from None
+        return done
+
+    def style_arrow(self, sector_id: int, color: Optional[str] = None,
+                    width: Optional[float] = None, line: Optional[str] = None,
+                    font_size: Optional[float] = None, bold: Optional[bool] = None,
+                    whole_arrow: bool = True) -> Dict[str, object]:
+        """Give an arrow a look: its ``color`` (a name, #rrggbb or r,g,b), ``width`` (0.5 to 6),
+        ``line`` (solid, dashed, dotted, dash_dot), and its name's ``font_size`` and ``bold``.
+        With ``whole_arrow`` (the default) every segment of the arrow on its sheet - the
+        trunk and the branches of a fork - takes it. What is not given stays as it is."""
+        model = self.snapshot()
+        found = next(((a, d) for d in model.diagrams() for a in d.arrows
+                      if a.sector_id == sector_id), None)
+        if found is None:
+            raise EditError(f"There is no arrow segment {sector_id}. get_diagram with "
+                            f"include_routes lists each segment.")
+        arrow, sheet = found
+        group = [a for a in sheet.arrows if a.flow == arrow.flow] if whole_arrow else [arrow]
+        try:
+            rgb = st.parse_color(color) if color is not None else None
+            dash = st.line_of(line) if line is not None else None
+        except st.StyleError as exc:
+            raise EditError(str(exc)) from None
+        if width is not None and not 0.5 <= float(width) <= 6.0:
+            raise EditError("An arrow's width is between 0.5 and 6.")
+        if font_size is not None and not 5 <= float(font_size) <= 36:
+            raise EditError("An arrow name's font size is between 5 and 36.")
+        attr = self._require_attribute("F_SECTOR_ATTRIBUTE")
+        styled = []
+        for a in group:
+            row = self._live_value_row("IDEF0/attribute_sectors", attr, a.sector_id)
+            old = vd.SectorStyle()
+            if row is not None and row.get("VISUAL_ATTRIBUTES"):
+                try:
+                    old = vd.decode_sector_style(vd.unmask(row["VISUAL_ATTRIBUTES"]))
+                except vd.BlobError:
+                    pass
+            stroke = old.stroke or vd.Stroke()
+            code = vd.decorated_code(stroke) if width is None and line is None else None
+            w = float(width) if width is not None else \
+                (stroke.width if stroke.kind == "basic" else 1.0)
+            pattern = (dash if line is not None else
+                       (stroke.dash if stroke.kind == "basic" else None))
+            colour = rgb if rgb is not None else \
+                ((old.color.r, old.color.g, old.color.b) if old.color else (0, 0, 0))
+            font = old.font or vd.Font("Dialog", 8, 0)
+            size = int(round(float(font_size))) if font_size is not None else font.size
+            font_style = font.style if bold is None else \
+                ((font.style | 1) if bold else (font.style & ~1))
+            data = vd.encode_sector_style(w, colour, (font.name or "Dialog", size, font_style),
+                                          pattern, stroke_code=code)
+            if row is not None:
+                self._set_row("IDEF0/attribute_sectors", row, {"VISUAL_ATTRIBUTES": data})
+            else:
+                self._add_value("IDEF0/attribute_sectors", "F_SECTOR_ATTRIBUTE", a.sector_id,
+                                {"CREATE_POS": 0.0, "CREATE_STATE": -1, "SHOW_TEXT": 1,
+                                 "TEXT_ALIGMENT": 0, "VISUAL_ATTRIBUTES": data})
+            styled.append(a.sector_id)
+        # A name in another size takes other room: set it beside its line again.
+        if (font_size is not None or bold is not None) and self._version() == 2:
+            fresh = self._sheet(sheet.parent_id)
+            layout = _Layout(fresh)
+            for a in fresh.arrows:
+                if a.sector_id in styled:
+                    self._relabel(layout, a, a.points, force=True)
+        last = group[0] if group else arrow
+        result: Dict[str, object] = {"segments": styled, "name": last.name}
+        if rgb is not None:
+            result["color"] = st.hex_of(rgb)
+        if width is not None:
+            result["width"] = float(width)
+        if line is not None:
+            result["line"] = st.line_name(dash)
+        if font_size is not None:
+            result["font_size"] = int(round(float(font_size)))
+        if bold is not None:
+            result["bold"] = bool(bold)
         return result
 
     def _place_object(self, kind: str, name: str, size: float, sheet, frame, owner_box,
@@ -473,7 +612,8 @@ class ModelEditor:
     # ------------------------------------------------------------ adding an arrow
 
     def add_arrow(self, sheet_id: int, source: Dict[str, object], target: Dict[str, object],
-                  name: Optional[str] = None, flow: Optional[int] = None) -> Dict[str, object]:
+                  name: Optional[str] = None, flow: Optional[int] = None,
+                  style: Optional[Dict[str, object]] = None) -> Dict[str, object]:
         """Draw an arrow on the sheet that decomposes ``sheet_id``.
 
         ``source`` is where it comes from: ``{"activity": id}`` (an output, leaving the right
@@ -584,7 +724,10 @@ class ModelEditor:
                                                               reverse=True)
         else:
             points = layout.plan(layout.anchor(src, "start"), layout.anchor(dst, "end"))
-        style_hex = self._sheet_style(sheet_id)
+        # A branch or a join looks like the arrow it comes off; a new arrow like most here.
+        style_hex = self._sector_style(other.sector_id) if other is not None else None
+        if style_hex is None:
+            style_hex = self._sheet_style(sheet_id)
         named = other is None or stream != other.stream_id
         text_box, tilde = layout.place_label(label, _font_size_of(style_hex), points) \
             if named else (None, False)
@@ -655,6 +798,8 @@ class ModelEditor:
             result["fork" if trunk is not None else "join"] = {
                 "at": (round(at[0], 2), round(at[1], 2)),
                 "trunk": other.sector_id, "continuation": continuation}
+        if style:
+            result["style"] = self.style_arrow(sector, **_style_args(style, _ARROW_STYLE))
         return result
 
     def _split(self, arrow, piece: int, at, node: int) -> Tuple[int, int, int]:
@@ -881,6 +1026,12 @@ class ModelEditor:
             "ATTRIBUTE_ID": self._require_attribute(attribute), "ELEMENT_ID": element_id,
             "OTHER_ELEMENT": other}, lenient=True)
 
+    def _sector_style(self, sector_id: int) -> Optional[str]:
+        """A segment's look as stored (VISUAL_ATTRIBUTES), or None if it has none."""
+        row = self._live_value_row("IDEF0/attribute_sectors",
+                                   self._require_attribute("F_SECTOR_ATTRIBUTE"), sector_id)
+        return (row or {}).get("VISUAL_ATTRIBUTES") or None
+
     def _sheet_style(self, sheet_id: int) -> object:
         """The look most arrows on this sheet have (else in the file), as stored; if the file
         has no arrow to copy, a plain thin black line named in Dialog 8 - what Ramus gives a
@@ -898,10 +1049,20 @@ class ModelEditor:
             everywhere[v] = everywhere.get(v, 0) + 1
             if r.get("ELEMENT_ID") in on_sheet:
                 counts[v] = counts.get(v, 0) + 1
+        # The usual look, not the loudest: a new arrow is plain - thin, solid, black - whatever
+        # colours some arrows here were given; only the type of its name follows the others.
         for pool in (counts, everywhere):
-            if pool:
-                return max(pool, key=pool.get)  # the masked hex text, copied as is
-        return vd.encode_sector_style(font=("Dialog", 8, 0))
+            plain = {v: n for v, n in pool.items() if _plain_style(v)}
+            if plain:
+                return max(plain, key=plain.get)  # the masked hex text, copied as is
+        fonts: Dict[Tuple[str, int, int], int] = {}
+        for v, n in everywhere.items():
+            font = _decoded_style(v).font
+            if font is not None:
+                key = (font.name or "Dialog", font.size, font.style & ~1)
+                fonts[key] = fonts.get(key, 0) + n
+        return vd.encode_sector_style(font=max(fonts, key=fonts.get) if fonts else
+                                      ("Dialog", 8, 0))
 
     def _partner(self, spec, which: str, sheet, sheets, acts, stream: Optional[int],
                  label: str) -> Optional[Tuple[int, int, Optional[int]]]:
@@ -2246,6 +2407,36 @@ def _crossing_pairs(routes, arrows) -> List[Tuple[int, int]]:
                    for u, v in zip(routes[t], routes[t][1:]) if u != v):
                 out.append((s, t))
     return out
+
+
+def _decoded_style(masked: str) -> "vd.SectorStyle":
+    try:
+        return vd.decode_sector_style(vd.unmask(masked))
+    except vd.BlobError:
+        return vd.SectorStyle()
+
+
+def _plain_style(masked: str) -> bool:
+    """Is this stored look an ordinary arrow's - a thin solid black line?"""
+    style = _decoded_style(masked)
+    stroke, color = style.stroke, style.color
+    if stroke is not None and (stroke.kind != "basic" or stroke.width > 1.0 or stroke.dash):
+        return False
+    return color is None or (color.r, color.g, color.b) == (0, 0, 0)
+
+
+_BOX_STYLE = ("fill", "color", "font_size", "bold", "block_type")
+_ARROW_STYLE = ("color", "width", "line", "font_size", "bold")
+
+
+def _style_args(style: Dict[str, object], allowed) -> Dict[str, object]:
+    """The keys of a ``style`` given with a new box or arrow, checked."""
+    if not isinstance(style, dict):
+        raise EditError("A style is an object, such as {\"fill\": \"green\"}.")
+    unknown = set(style) - set(allowed)
+    if unknown:
+        raise EditError(f"A style takes {', '.join(allowed)}; not {', '.join(sorted(unknown))}.")
+    return dict(style)
 
 
 def _justify_roles(box, sizes) -> List[Tuple[float, float, float, float]]:

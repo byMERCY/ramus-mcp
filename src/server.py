@@ -621,7 +621,8 @@ def rename_flow(flow: int, name: str) -> Dict[str, Any]:
 @mcp.tool(title="Add an activity", annotations=_EDIT)
 def add_activity(parent: str, name: str, x: Optional[float] = None, y: Optional[float] = None,
                  width: Optional[float] = None, height: Optional[float] = None,
-                 kind: str = "process", owner: Optional[str] = None) -> Dict[str, Any]:
+                 kind: str = "process", owner: Optional[str] = None,
+                 style: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Add an activity box to the decomposition of ``parent`` (its number, "A0", or id).
 
     The box goes last on that sheet and takes the next number (A3 after A1, A2); adding the
@@ -634,10 +635,14 @@ def add_activity(parent: str, name: str, x: Optional[float] = None, y: Optional[
     external entity, where data comes from or goes to - or "store", a data store; they take
     no number and are placed apart from the processes (name them by name in add_arrow). In a
     DFDS model "role" adds a performer as a tag inside the activity ``owner`` (its number).
+
+    ``style`` gives it a look at once - the keys of style_activity: {"fill": "green",
+    "color": "black", "font_size": 12, "bold": true, "block_type": "operation"}.
     """
     _require()
     result = _Open.editor.add_activity(_activity_id(parent), name, x, y, width, height,
-                                       kind, None if owner is None else _activity_id(owner))
+                                       kind, None if owner is None else _activity_id(owner),
+                                       style)
     sheet = next((d for d in _Open.editor.snapshot().diagrams() if d.parent_id == result["parent"]), None)
     if sheet is not None and len(sheet.activities) > 6:
         result["note"] = (f"This sheet now has {len(sheet.activities)} boxes; IDEF0 recommends "
@@ -647,7 +652,8 @@ def add_activity(parent: str, name: str, x: Optional[float] = None, y: Optional[
 
 @mcp.tool(title="Draw an arrow", annotations=_EDIT)
 def add_arrow(sheet: str, source: Dict[str, Any], target: Dict[str, Any],
-              name: Optional[str] = None, flow: Optional[int] = None) -> Dict[str, Any]:
+              name: Optional[str] = None, flow: Optional[int] = None,
+              style: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Draw an arrow on a sheet - ``sheet`` is the number of the activity it decomposes ("A0",
     "A12"; "A-0" for the context diagram) or its id.
 
@@ -671,10 +677,45 @@ def add_arrow(sheet: str, source: Dict[str, Any], target: Dict[str, Any],
     "Клиент", "side": "left" | "top" | "right" | "bottom"} - a flow leaves by the right and
     arrives by the left unless told otherwise - or {"frame": "left" | "top" | "right" |
     "bottom"}; boxes are external entities and data stores as well as processes.
+
+    ``style`` gives the arrow a look at once - the keys of style_arrow: {"color": "red",
+    "width": 2, "line": "dashed", "font_size": 9, "bold": false}. A branch or a join takes
+    the look of the arrow it comes off unless given one.
     """
     _require()
     return _edited(_Open.editor.add_arrow(_sheet_id(sheet), _end_ref(source), _end_ref(target),
-                                          name, None if flow is None else int(flow)))
+                                          name, None if flow is None else int(flow), style))
+
+
+@mcp.tool(title="Colour and style a box", annotations=_EDIT)
+def style_activity(activity: str, fill: Optional[str] = None, color: Optional[str] = None,
+                   font_size: Optional[float] = None, bold: Optional[bool] = None,
+                   block_type: Optional[str] = None) -> Dict[str, Any]:
+    """Give a box a look - ``activity`` is its number ("A2"), its name (an external entity,
+    a store) or id. ``fill`` is its background and ``color`` its outline and name: a colour
+    name (red, green, blue, yellow, orange, teal, gray ... or Russian: зелёный, красный ...),
+    #rrggbb or r,g,b; "white" and "black" bring back the usual look. ``font_size`` and
+    ``bold`` set its name's type. ``block_type`` is what Ramus calls an activity -
+    complex_process, process, process_part, operation, action: a label, not a shape. Only
+    what is given changes."""
+    _require()
+    return _edited(_Open.editor.style_activity(_activity_id(activity), fill, color, font_size,
+                                               bold, block_type))
+
+
+@mcp.tool(title="Colour and style an arrow", annotations=_EDIT)
+def style_arrow(segment: int, color: Optional[str] = None, width: Optional[float] = None,
+                line: Optional[str] = None, font_size: Optional[float] = None,
+                bold: Optional[bool] = None, whole_arrow: bool = True) -> Dict[str, Any]:
+    """Give an arrow a look - ``segment`` is any of its segment ids (get_diagram with
+    include_routes, or what add_arrow answered). ``color`` as for boxes; ``width`` 0.5 to 6
+    (1 is the usual, 2-3 a main flow); ``line`` solid, dashed, dotted or dash_dot;
+    ``font_size`` and ``bold`` for its name (a name in a new size is set beside its line
+    again). With whole_arrow (the default) the whole arrow on its sheet - trunk and branches -
+    takes the look. Only what is given changes."""
+    _require()
+    return _edited(_Open.editor.style_arrow(int(segment), color, width, line, font_size, bold,
+                                            whole_arrow))
 
 
 @mcp.tool(title="Move or resize an activity", annotations=_EDIT)

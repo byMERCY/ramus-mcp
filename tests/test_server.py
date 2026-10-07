@@ -399,7 +399,7 @@ class OverStdio(unittest.TestCase):
              "delete_activity", "delete_arrow", "tidy_sheet", "layout_sheet", "tidy_labels",
              "save_model",
              "check_model", "check_layout", "join_levels", "create_model", "list_models",
-             "export_diagram"},
+             "export_diagram", "style_activity", "style_arrow"},
         )
         by_name = {t.name: t for t in tools.tools}
         self.assertTrue(by_name["render_diagram"].annotations.readOnlyHint)

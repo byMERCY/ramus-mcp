@@ -17,10 +17,10 @@ from PIL import Image, ImageDraw, ImageFont
 
 try:
     from .ramus_rsf import Diagram
-    from .scene import Dot, Line, Poly, Rect, Scene, build_scene, font_path
+    from .scene import Dot, Line, Poly, Rect, Scene, bold_font_path, build_scene, font_path
 except ImportError:  # pragma: no cover - script execution
     from ramus_rsf import Diagram
-    from scene import Dot, Line, Poly, Rect, Scene, build_scene, font_path
+    from scene import Dot, Line, Poly, Rect, Scene, bold_font_path, build_scene, font_path
 
 
 SCALE = 2.0  # model units -> pixels in the delivered image
@@ -29,9 +29,9 @@ _ANCHORS = {"start": "ls", "middle": "ms", "end": "rs"}  # PIL anchors: horizont
 
 
 @lru_cache(maxsize=32)
-def _font(pixels: int):
+def _font(pixels: int, bold: bool = False):
     """A TrueType face at this pixel size, or Pillow's bitmap default if none is installed."""
-    path = font_path()
+    path = (bold_font_path() if bold else None) or font_path()
     if path is None:
         return ImageFont.load_default()
     return ImageFont.truetype(path, pixels)
@@ -128,7 +128,8 @@ def render_scene_png(scene: Scene, scale: float = SCALE) -> bytes:
             x, y = px((item.x, item.y))
             draw.text(
                 (x, y), item.text, fill=item.color,
-                font=_font(max(int(round(item.size * k)), 1)), anchor=_ANCHORS[item.anchor],
+                font=_font(max(int(round(item.size * k)), 1), item.bold),
+                anchor=_ANCHORS[item.anchor],
             )
 
     final = (max(int(round(scene.width * scale)), 1), max(int(round(scene.height * scale)), 1))

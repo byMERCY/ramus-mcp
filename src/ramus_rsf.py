@@ -132,6 +132,7 @@ class Activity:
     decomposition: str = "idef0"  # how that decomposition is drawn: "idef0", "dfd", "dfds"
     long_name: str = ""  # the second part of a DFDS name, written small under the first
     owner_id: Optional[int] = None  # a DFDS role: the box it belongs to
+    bold: bool = False  # its name is written in bold
 
     @property
     def has_box(self) -> bool:
@@ -191,6 +192,7 @@ class Arrow:
     dash: Optional[Tuple[float, ...]] = None  # stroke dash pattern; None = solid
     font_size: float = 10.0
     flow: int = 0  # arrows with the same flow number are branches/joins of one flow
+    bold: bool = False  # its name is written in bold
 
     @property
     def has_route(self) -> bool:
@@ -417,6 +419,7 @@ class RsfModel:
         rect_attr = self.attribute_id("F_BOUNDS")
         types = self._per_element("IDEF0/attribute_function_types", "F_TYPE", "TYPE")
         sizes = self._per_element("IDEF0/attribute_fonts", "F_FONT", "SIZE")
+        font_styles = self._per_element("IDEF0/attribute_fonts", "F_FONT", "STYLE")
         fills = self._per_element("IDEF0/attribute_colors", "F_BACKGROUND", "COLOR")
         inks = self._per_element("IDEF0/attribute_colors", "F_FOREGROUND", "COLOR")
         notations = self.decomposition_types()
@@ -454,6 +457,7 @@ class RsfModel:
                 long_name=dfds.get((eid, name_attr.get(live[eid].qualifier_id, -1)),
                                    ("", ""))[1],
                 owner_id=owner if owner > 0 else None,
+                bold=bool(_int(font_styles.get(eid)) & 1),
             )
         for a in out.values():
             parent = out.get(a.parent_id)
@@ -777,6 +781,7 @@ class RsfModel:
                 width=style.stroke.width if style.stroke and style.stroke.kind == "basic" else 1.0,
                 dash=_dash_of(style.stroke),
                 font_size=float(style.font.size) if style.font else 10.0,
+                bold=bool(style.font and style.font.style & 1),
             )
             alt = row.get("ALTERNATIVE_TEXT")
             if alt and alt.strip():

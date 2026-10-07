@@ -95,6 +95,7 @@ class Text:
     size: float
     color: str
     anchor: str = "middle"  # "start", "middle" or "end"
+    bold: bool = False
 
 
 Item = Union[Rect, Line, Poly, Dot, Text]
@@ -231,6 +232,25 @@ class Scene:
 
 _FONT_NAMES = ("segoeui.ttf", "arial.ttf", "DejaVuSans.ttf", "LiberationSans-Regular.ttf")
 _REFERENCE_SIZE = 100  # measure big, scale down: small sizes round badly
+
+
+_BOLD_NAMES = ("segoeuib.ttf", "arialbd.ttf", "DejaVuSans-Bold.ttf",
+               "LiberationSans-Bold.ttf")
+
+
+@lru_cache(maxsize=1)
+def bold_font_path() -> Optional[str]:
+    """Path of a bold TrueType face, or None (bold names are then drawn regular)."""
+    try:
+        from PIL import ImageFont
+    except ImportError:  # pragma: no cover - Pillow is a requirement
+        return None
+    for name in _BOLD_NAMES:
+        try:
+            return ImageFont.truetype(name, 20).path
+        except OSError:
+            continue
+    return None
 
 
 @lru_cache(maxsize=1)
@@ -413,6 +433,16 @@ def _name_lines(items: List[Item], text: str, x: float, y: float, w: float, h: f
 
 
 def _box(a: Activity, notation: str = "idef0") -> List[Item]:
+    """One box (see _box_shapes), its name in bold if it is set so."""
+    items = _box_shapes(a, notation)
+    if a.bold:
+        for item in items:
+            if isinstance(item, Text) and item.size != NUMBER_SIZE:
+                item.bold = True
+    return items
+
+
+def _box_shapes(a: Activity, notation: str = "idef0") -> List[Item]:
     """One box in the shape its sheet's notation gives it: an IDEF0 activity a rectangle with
     its node number; on a data flow diagram a process with rounded corners and its number,
     an external entity with a second line along its top and left, a data store open at the
@@ -560,7 +590,8 @@ def _label(arrow: Arrow, notation: str = "idef0") -> List[Item]:
     top = lb.y + lb.height / 2.0 - len(lines) * line_h / 2.0
     for i, line in enumerate(lines):
         items.append(
-            Text(lb.x + lb.width / 2.0, top + i * line_h + BASELINE * size, line, size, color)
+            Text(lb.x + lb.width / 2.0, top + i * line_h + BASELINE * size, line, size, color,
+                 bold=arrow.bold)
         )
     if lb.tilde_pos is not None:
         items.extend(_tilde(arrow, lb, color))
