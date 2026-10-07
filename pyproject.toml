@@ -1,6 +1,6 @@
 [project]
 name = "ramus-mcp"
-version = "1.0.0"
+version = "1.1.0"
 description = "Eyes and hands for Ramus IDEF0 models (.rsf): read, see, check, edit and create them from an AI agent over MCP."
 readme = "README.md"
 license = "MIT"

@@ -45,6 +45,14 @@ that Ramus opens.
     <td align="center"><sub>Context diagram A-0</sub></td>
     <td align="center"><sub>Its decomposition A0 — <code>check_model</code>: no errors, no warnings</sub></td>
   </tr>
+  <tr>
+    <td width="50%"><img src="docs/images/en/form.png" alt="A0 in the IDEF0 diagram form"></td>
+    <td width="50%"><img src="docs/images/en/dfd.png" alt="A data flow diagram"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>The same sheet in the IDEF0 diagram form — <code>export_diagram</code> writes it for a report</sub></td>
+    <td align="center"><sub>A data flow diagram (DFD): processes, external entities, data stores</sub></td>
+  </tr>
 </table>
 
 ## Install in Claude Desktop

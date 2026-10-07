@@ -45,6 +45,14 @@ ramus-mcp даёт Клоду — или любому MCP-клиенту — р�
     <td align="center"><sub>Контекстная диаграмма A-0</sub></td>
     <td align="center"><sub>Её декомпозиция A0 — <code>check_model</code>: ни ошибок, ни предупреждений</sub></td>
   </tr>
+  <tr>
+    <td width="50%"><img src="docs/images/ru/form.png" alt="A0 в бланке IDEF0"></td>
+    <td width="50%"><img src="docs/images/ru/dfd.png" alt="Диаграмма потоков данных"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Тот же лист в бланке IDEF0 — <code>export_diagram</code> пишет его сразу для отчёта</sub></td>
+    <td align="center"><sub>Диаграмма потоков данных (DFD): процессы, внешние сущности, хранилища</sub></td>
+  </tr>
 </table>
 
 ## Установка в Claude Desktop

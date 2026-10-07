@@ -3,7 +3,7 @@
   "manifest_version": "0.4",
   "name": "ramus-mcp",
   "display_name": "Ramus IDEF0",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Read, see, check, edit and create Ramus models (.rsf) - IDEF0, DFD and DFDS - Claude's eyes and hands for Ramus.",
   "long_description": "Claude opens a Ramus model, reads its activity tree and arrows, and sees each diagram as a picture. It checks the model against the rules of IDEF0 - controls and outputs on every box, ICOM balance between levels, 3 to 6 boxes on a sheet, verbs for activities and nouns for arrows - changes it, with boxes and arrows placed and routed the IDEF0 way, or builds a new model from nothing, and saves a .rsf that Ramus opens. It works on the file format itself: neither Ramus nor Java is needed.\n\nКоннектор, через который Клод читает, рисует, проверяет по правилам IDEF0, правит и создаёт с нуля модели Ramus (.rsf).",
   "author": {

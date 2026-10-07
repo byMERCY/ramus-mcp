@@ -6,6 +6,8 @@ For each language it writes, under docs/images/<lang>/:
 * build.gif         - the model growing, one tool call per frame;
 * context.png       - the context diagram A-0;
 * decomposition.png - the top decomposition A0;
+* form.png          - the same decomposition in the IDEF0 diagram form;
+* dfd.png           - a data flow diagram built the same way;
 * in-ramus.png      - the same file as the Ramus engine draws it (only with RAMUS_JAVA and
                       RAMUS_MCP_JAR set, see ramus_validate.py).
 
@@ -28,6 +30,7 @@ from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 import idef0_rules as rules  # noqa: E402
 from model_editor import ModelEditor  # noqa: E402
 from render_png import render_diagram_png  # noqa: E402
+from scene import Form  # noqa: E402
 
 # One process, told in two languages.
 DEMOS = {
@@ -46,6 +49,25 @@ DEMOS = {
         "input": "registrations", "control": "contest rules",
         "mechanism": "jury", "output": "contest results",
         "tasks": "problem set", "solutions": "solutions", "scores": "scores",
+    },
+}
+# A data flow diagram of an online shop, in the same two languages.
+DFD = {
+    "ru": {
+        "top": "Обработать заказ интернет-магазина", "project": "Магазин",
+        "processes": ["Принять заказ", "Проверить оплату", "Собрать заказ", "Отгрузить заказ"],
+        "externals": ["Клиент", "Банк"], "stores": ["Заказы", "Каталог товаров"],
+        "flows": ["заказ", "цены товаров", "новый заказ", "счёт", "запрос оплаты",
+                  "подтверждение оплаты", "оплаченный заказ", "собранный заказ",
+                  "отметка об отгрузке", "уведомление"],
+    },
+    "en": {
+        "top": "Process an online order", "project": "Shop",
+        "processes": ["Take the order", "Check the payment", "Pick the order", "Ship the order"],
+        "externals": ["Customer", "Bank"], "stores": ["Orders", "Catalog"],
+        "flows": ["order", "prices", "new order", "invoice", "payment request",
+                  "payment confirmation", "paid order", "picked order", "shipping mark",
+                  "notice"],
     },
 }
 WIDTH = 960  # of a GIF frame
@@ -115,6 +137,35 @@ def build(lang: str, folder: str, snap) -> str:
     ed.save()
     found = rules.check(ed.snapshot())
     print(f"{lang}: check_model {rules.summary(found)}", [(f.sheet, f.rule) for f in found])
+    return path
+
+
+def build_dfd(lang: str, folder: str) -> str:
+    """The data flow diagram demo: processes down the diagonal, the customer and the bank
+    beside them, two data stores below; flows on whichever side suits."""
+    t = DFD[lang]
+    path = os.path.join(folder, f"dfd-{lang}.rsf")
+    ed = ModelEditor.create(path, t["top"], author="ramus-mcp", project=t["project"],
+                            notation="dfd")
+    top = next(a.element_id for a in ed.snapshot().activities().values() if a.number == "A0")
+    a = [ed.add_activity(top, n)["id"] for n in t["processes"]]
+    client, bank = (ed.add_activity(top, n, kind="external")["id"] for n in t["externals"])
+    orders, catalog = (ed.add_activity(top, n, kind="store")["id"] for n in t["stores"])
+    f = iter(t["flows"])
+    for source, target in (
+            ({"activity": client}, {"activity": a[0]}),
+            ({"activity": catalog, "side": "top"}, {"activity": a[0], "side": "bottom"}),
+            ({"activity": a[0]}, {"activity": orders, "side": "top"}),
+            ({"activity": a[0]}, {"activity": a[1]}),
+            ({"activity": a[1]}, {"activity": bank}),
+            ({"activity": bank, "side": "bottom"}, {"activity": a[1], "side": "bottom"}),
+            ({"activity": a[1]}, {"activity": a[2]}),
+            ({"activity": a[2]}, {"activity": a[3]}),
+            ({"activity": a[3], "side": "bottom"}, {"activity": orders, "side": "right"}),
+            ({"activity": a[3], "side": "top"}, {"activity": client, "side": "top"})):
+        ed.add_arrow(top, source, target, next(f))
+    ed.tidy_sheet(top)
+    ed.save()
     return path
 
 
@@ -204,6 +255,12 @@ def main() -> None:
             for node, name in (("A-0", "context.png"), ("A0", "decomposition.png")):
                 with open(os.path.join(folder, name), "wb") as fh:
                     fh.write(_sheet_png(model, node))
+            top = next(d for d in model.diagrams() if d.node == "A0")
+            with open(os.path.join(folder, "form.png"), "wb") as fh:
+                fh.write(render_diagram_png(top, form=Form(**model.form_of(top))))
+            dfd = ModelEditor(build_dfd(lang, tmp)).snapshot()
+            with open(os.path.join(folder, "dfd.png"), "wb") as fh:
+                fh.write(_sheet_png(dfd, "A0"))
             _in_ramus(path, folder)
             sizes = {f: os.path.getsize(os.path.join(folder, f)) // 1024
                      for f in sorted(os.listdir(folder))}
