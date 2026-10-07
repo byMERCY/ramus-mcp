@@ -116,7 +116,7 @@ A sheet is named by the activity it decomposes — `"A-0"` is the context diagra
 decomposition, then `"A1"`, `"A12"`… — and an activity by its number or id.
 
 <details>
-<summary><b>26 tools</b> — click to open</summary>
+<summary><b>28 tools</b> — click to open</summary>
 
 | Tool | What it does |
 |---|---|
@@ -134,6 +134,7 @@ decomposition, then `"A1"`, `"A12"`… — and an activity by its number or id.
 | `add_arrow(sheet, source, target, name?, style?)` | Draw an arrow: box → box, frame → box, box → frame, a fork off an arrow or a join into one; joined to the same arrow on the other level when it is there |
 | `style_activity(activity, fill?, color?, font_size?, bold?, block_type?)` | A box's look: fill and outline colour (by name, `#rrggbb` or `r,g,b`), font, block type |
 | `style_arrow(segment, color?, width?, line?, font_size?, bold?)` | An arrow's look: colour, width, solid / dashed / dotted / dash-dot, its name's font; the whole arrow with its branches |
+| `add_text(sheet, text, …)` · `set_purpose(purpose, viewpoint?)` | Write a note or a legend on a sheet; state the model's purpose and viewpoint on A-0, as IDEF0 asks |
 | `move_activity(activity, …)` | Move or resize a box; its arrows follow |
 | `delete_activity` · `delete_arrow` | Delete a box with its arrows; delete an arrow segment — as Ramus does |
 | `join_levels(first, second)` | Tie an arrow to its continuation on the level below |

@@ -378,6 +378,49 @@ def decode_diagram_blob(data: bytes, strict: bool = False) -> DiagramBlob:
     return blob
 
 
+def encode_texts_v2(texts: List[TextRecord]) -> bytes:
+    """The ``DATA`` of a Ramus 3 diagram (version 2): only its free texts, each with a font
+    and a colour of its own (written as new every time, which the reader takes as well as
+    references back)."""
+    out = bytearray()
+
+    def i32(v: int) -> None:
+        out.extend(struct.pack("<i", v))
+
+    def f64(v: float) -> None:
+        out.extend(struct.pack("<d", v))
+
+    def flag(v: bool) -> None:
+        out.append(1 if v else 0)
+
+    def string(s: Optional[str]) -> None:
+        if s is None:
+            i32(-1)
+            return
+        data = s.encode("utf-8")
+        i32(len(data))
+        out.extend(data)
+
+    i32(2)
+    i32(len(texts))
+    for t in texts:
+        if t.font is None:
+            flag(True)  # font: null
+        else:
+            flag(False)
+            flag(True)  # new
+            string(t.font.name)
+            i32(t.font.size)
+            i32(t.font.style)
+        flag(True)  # colour: new
+        for v in (t.color.r, t.color.g, t.color.b):
+            i32(v)
+        for v in (t.x, t.y, t.width, t.height):
+            f64(v)
+        string(t.text)
+    return bytes(out)
+
+
 def _read_sector(c: _Cursor, mem: _Memory) -> SectorRecord:
     c.string()  # two strings older versions kept here; both are empty or null in practice
     c.string()

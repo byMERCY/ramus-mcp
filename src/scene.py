@@ -546,6 +546,31 @@ def _tunnel(points: List[Point], at_start: bool, soft: bool, color: str) -> List
     return items
 
 
+BEND_RADIUS = 4.0  # Ramus rounds an arrow's bends a little
+
+
+def _rounded(points: List[Point], radius: float = BEND_RADIUS) -> List[Point]:
+    """A route with each bend rounded off - a short curve in place of the corner, never more
+    than half of either piece it joins - as Ramus draws it."""
+    if len(points) < 3:
+        return list(points)
+    out: List[Point] = [points[0]]
+    for prev, here, nxt in zip(points, points[1:], points[2:]):
+        a, b = _unit(here, prev), _unit(here, nxt)
+        if a is None or b is None or abs(a[0] * b[0] + a[1] * b[1]) > 0.99:
+            out.append(here)  # a straight run, or doubling back: no bend to round
+            continue
+        r = min(radius, math.dist(prev, here) / 2, math.dist(here, nxt) / 2)
+        p0 = (here[0] + a[0] * r, here[1] + a[1] * r)
+        p1 = (here[0] + b[0] * r, here[1] + b[1] * r)
+        for k in range(5):  # a quadratic curve through the corner's two sides
+            t = k / 4
+            out.append(((1 - t) ** 2 * p0[0] + 2 * (1 - t) * t * here[0] + t * t * p1[0],
+                        (1 - t) ** 2 * p0[1] + 2 * (1 - t) * t * here[1] + t * t * p1[1]))
+    out.append(points[-1])
+    return out
+
+
 def _arrow(arrow: Arrow) -> List[Item]:
     """The line of one segment, its head if it has one, and its tunnel brackets."""
     if not arrow.has_route:
@@ -553,7 +578,8 @@ def _arrow(arrow: Arrow) -> List[Item]:
     stub = arrow.geometry == "stub"
     color = arrow.color or (STUB_COLOR if stub else "#000000")
     dash: Dash = (5.0, 3.0) if stub else arrow.dash
-    items: List[Item] = [Line(list(arrow.points), color, max(arrow.width, MIN_LINE_WIDTH), dash)]
+    items: List[Item] = [Line(_rounded(list(arrow.points)), color,
+                              max(arrow.width, MIN_LINE_WIDTH), dash)]
     # Ramus puts a head wherever the segment ends on something: a box side, the frame, or
     # nothing at all. Where it ends on a junction the flow goes on, so there is no head.
     if arrow.end.kind in ("activity", "frame", "open"):
@@ -614,11 +640,13 @@ def _tilde(arrow: Arrow, lb, color: str) -> List[Item]:
 
 
 def _free_text(t: FreeText) -> List[Item]:
+    """A free text, centred in its box both ways, as Ramus writes one."""
     size = t.font_size
     line_h = size * 1.15
     lines = wrap(t.text, max(t.width, size * 2.0), size)
+    top = t.y + max(0.0, (t.height - len(lines) * line_h) / 2.0)
     return [
-        Text(t.x + 2.0, t.y + i * line_h + BASELINE * size + 1.0, line, size, t.color, "start")
+        Text(t.x + t.width / 2.0, top + i * line_h + BASELINE * size, line, size, t.color)
         for i, line in enumerate(lines)
     ]
 

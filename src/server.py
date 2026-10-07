@@ -687,6 +687,27 @@ def add_arrow(sheet: str, source: Dict[str, Any], target: Dict[str, Any],
                                           name, None if flow is None else int(flow), style))
 
 
+@mcp.tool(title="Write a text on a sheet", annotations=_EDIT)
+def add_text(sheet: str, text: str, x: Optional[float] = None, y: Optional[float] = None,
+             width: Optional[float] = None, font_size: float = 10.0,
+             color: Optional[str] = None) -> Dict[str, Any]:
+    """Write a free text on a sheet - ``sheet`` as for add_arrow ("A0"; "A-0" the context
+    diagram): a note, a legend, a remark. Without x/y it goes in the lower left corner, clear
+    of what is there; ``width`` is how wide it may run before it wraps ("\\n" breaks a line).
+    ``color`` as for style_activity. Ramus 3 files only."""
+    _require()
+    return _edited(_Open.editor.add_text(_sheet_id(sheet), text, x, y, width, font_size, color))
+
+
+@mcp.tool(title="State the purpose and viewpoint", annotations=_EDIT)
+def set_purpose(purpose: str, viewpoint: Optional[str] = None) -> Dict[str, Any]:
+    """Write the model's purpose and viewpoint on its context diagram A-0, as IDEF0 asks of
+    every model: why it is made (purpose) and from whose position it is seen (viewpoint) -
+    "Цель: ...", "Точка зрения: ..." in a Russian model. Called again, it replaces them."""
+    _require()
+    return _edited(_Open.editor.set_purpose(purpose, viewpoint))
+
+
 @mcp.tool(title="Colour and style a box", annotations=_EDIT)
 def style_activity(activity: str, fill: Optional[str] = None, color: Optional[str] = None,
                    font_size: Optional[float] = None, bold: Optional[bool] = None,

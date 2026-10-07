@@ -1026,6 +1026,84 @@ class ModelEditor:
             "ATTRIBUTE_ID": self._require_attribute(attribute), "ELEMENT_ID": element_id,
             "OTHER_ELEMENT": other}, lenient=True)
 
+    # ------------------------------------------------------------ free text
+
+    def _sheet_texts(self, sheet_id: int):
+        """The free texts of a sheet as its diagram record holds them, and that record's row.
+        Ramus 3 files only: a Ramus 2 record also holds every route, which is not rewritten."""
+        if self._version() != 2:
+            raise EditError("Text can be written on sheets of Ramus 3 files only; open a "
+                            "Ramus 2 file in Ramus 3 and save it once first.")
+        attr = self._require_attribute("F_VISUAL_DATA")
+        row = self._live_value_row("IDEF0/attribute_visual_datas", attr, sheet_id)
+        data = vd.unmask(row["DATA"]) if row is not None and row.get("DATA") else b""
+        try:
+            blob = vd.decode_diagram_blob(data)
+        except vd.BlobError:
+            raise EditError("This sheet's diagram record cannot be read; its texts are left "
+                            "alone.") from None
+        return list(blob.texts), row
+
+    def _write_texts(self, sheet_id: int, texts, row) -> None:
+        data = vd.encode_texts_v2(texts)
+        if row is not None:
+            self._set_row("IDEF0/attribute_visual_datas", row, {"DATA": data})
+        else:
+            self._add_value("IDEF0/attribute_visual_datas", "F_VISUAL_DATA", sheet_id,
+                            {"DATA": data})
+
+    def add_text(self, sheet_id: int, text: str, x: Optional[float] = None,
+                 y: Optional[float] = None, width: Optional[float] = None,
+                 font_size: float = 10.0, color: Optional[str] = None) -> Dict[str, object]:
+        """Write a free text on a sheet - a note, a legend, the purpose of a model. Where it is
+        not placed it goes in the lower left corner, clear of the boxes, arrows and names."""
+        text = _clean_name(text, "text")
+        sheet = self._sheet(sheet_id)
+        texts, row = self._sheet_texts(sheet_id)
+        size = float(font_size)
+        if not 5 <= size <= 36:
+            raise EditError("A text's font size is between 5 and 36.")
+        try:
+            rgb = st.parse_color(color) if color is not None else (0, 0, 0)
+        except st.StyleError as exc:
+            raise EditError(str(exc)) from None
+        # Measured as Ramus measures (label_width), else Ramus cuts the end of a line off.
+        widest = max((label_width(line, size) for line in text.split("\n")), default=0.0)
+        w = float(width) if width else min(max(widest + 8.0, 40.0), 330.0)
+        lines = sum(len(wrap(line, max(w - 4.0, size), size)) for line in text.split("\n"))
+        h = lines * size * 1.15 + 6.0
+        if x is None or y is None:
+            left, top, right, bottom = sheet.frame
+            x, y = _free_spot(sheet, sheet.frame, w, h, (left + 12.0, bottom - h - 12.0))
+        _inside_frame(float(x), float(y), w, h, sheet.frame)
+        texts.append(vd.TextRecord(vd.Font("Dialog", int(round(size)), 0),
+                                   vd.Color(*rgb), float(x), float(y), w, h, text))
+        self._write_texts(sheet_id, texts, row)
+        return {"sheet": sheet.node, "text": text, "index": len(texts) - 1,
+                "x": float(x), "y": float(y), "width": w, "height": h}
+
+    def set_purpose(self, purpose: str, viewpoint: Optional[str] = None) -> Dict[str, object]:
+        """State the model's purpose and viewpoint on its context diagram, as IDEF0 asks of
+        every A-0: one text, replaced each time, in the model's language."""
+        purpose = _clean_name(purpose, "purpose")
+        context = next((d for d in self.snapshot().diagrams() if d.node == "A-0"), None)
+        if context is None:
+            raise EditError("This model has no context diagram to write its purpose on.")
+        russian = any("\u0400" <= ch <= "\u04ff"
+                      for a in context.activities for ch in a.name + purpose)
+        words = ("Цель:", "Точка зрения:") if russian else ("Purpose:", "Viewpoint:")
+        texts, row = self._sheet_texts(context.parent_id)
+        kept = [t for t in texts if not (t.text or "").startswith(
+            ("Цель:", "Purpose:", "Точка зрения:", "Viewpoint:"))]
+        if len(kept) != len(texts):
+            self._write_texts(context.parent_id, kept, row)
+        body = f"{words[0]} {purpose}"
+        if viewpoint and viewpoint.strip():
+            body += f"\n{words[1]} {viewpoint.strip()}"
+        done = self.add_text(context.parent_id, body, width=330.0)
+        done["replaced"] = len(texts) - len(kept)
+        return done
+
     def _sector_style(self, sector_id: int) -> Optional[str]:
         """A segment's look as stored (VISUAL_ATTRIBUTES), or None if it has none."""
         row = self._live_value_row("IDEF0/attribute_sectors",

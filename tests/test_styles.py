@@ -109,5 +109,46 @@ class Styling(unittest.TestCase):
             self.ed.style_arrow(arrow.sector_id, width=40)
 
 
+class Texts(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.ed = olympiad(os.path.join(self.tmp.name, "o.rsf"))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def sheet(self, node):
+        return next(d for d in self.ed.snapshot().diagrams() if d.node == node)
+
+    def test_a_text_is_written_where_there_is_room_and_read_back(self):
+        top = self.sheet("A0")
+        done = self.ed.add_text(top.parent_id, "Пунктир - обратная связь", color="blue")
+        texts = self.sheet("A0").texts
+        self.assertEqual([t.text for t in texts], ["Пунктир - обратная связь"])
+        t = texts[0]
+        self.assertEqual((t.x, t.y, t.color), (done["x"], done["y"], "#0000ff"))
+        for box in top.activities:  # clear of the boxes
+            self.assertFalse(t.x < box.x + box.width and box.x < t.x + t.width
+                             and t.y < box.y + box.height and box.y < t.y + t.height)
+        self.ed.add_text(top.parent_id, "Вторая", x=600.0, y=40.0)
+        self.assertEqual(len(self.sheet("A0").texts), 2)
+
+    def test_the_purpose_and_viewpoint_stand_on_the_context_and_are_replaced(self):
+        self.ed.set_purpose("Показать, как проводится олимпиада", "Организатор")
+        self.ed.set_purpose("Описать олимпиаду", "Жюри")
+        texts = [t.text for t in self.sheet("A-0").texts]
+        self.assertEqual(texts, ["Цель: Описать олимпиаду\nТочка зрения: Жюри"])
+
+    def test_bends_are_drawn_rounded(self):
+        from scene import _rounded
+        pts = _rounded([(0.0, 0.0), (100.0, 0.0), (100.0, 50.0)])
+        self.assertEqual((pts[0], pts[-1]), ((0.0, 0.0), (100.0, 50.0)))
+        self.assertNotIn((100.0, 0.0), pts)  # the corner is cut
+        self.assertTrue(all(abs(x - 100.0) <= 4.0 and abs(y) <= 4.0 for x, y in pts[1:-1]))
+        self.assertEqual(_rounded([(0.0, 0.0), (5.0, 0.0), (9.0, 0.0)]),
+                         [(0.0, 0.0), (5.0, 0.0), (9.0, 0.0)])
+
+
 if __name__ == "__main__":
     unittest.main()
