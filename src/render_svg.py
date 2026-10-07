@@ -74,9 +74,9 @@ def render_scene(scene: Scene) -> str:
     )
 
 
-def render_diagram(diagram: Diagram, title: str = "") -> str:
-    """One diagram -> a complete SVG document string."""
-    return render_scene(build_scene(diagram, title))
+def render_diagram(diagram: Diagram, title: str = "", form=None) -> str:
+    """One diagram -> a complete SVG document string (in the IDEF0 form, given one)."""
+    return render_scene(build_scene(diagram, title, form))
 
 
 def main(argv: List[str]) -> int:

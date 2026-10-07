@@ -108,7 +108,7 @@ Python. `RAMUS_MODELS_DIR` (необязательно) — где `list_models`
 декомпозиция, дальше `"A1"`, `"A12"`…; работа — по номеру или id.
 
 <details>
-<summary><b>23 инструмента</b> — нажмите, чтобы раскрыть</summary>
+<summary><b>24 инструмента</b> — нажмите, чтобы раскрыть</summary>
 
 | Инструмент | Что делает |
 |---|---|
@@ -117,7 +117,8 @@ Python. `RAMUS_MODELS_DIR` (необязательно) — где `list_models`
 | `create_model(path, activity, author?, project?, notation?)` | Новая модель — IDEF0, DFD или DFDS: контекстная диаграмма с главной работой A0 |
 | `list_diagrams()` · `get_function_tree()` | Листы; дерево работ с номерами IDEF0 |
 | `get_diagram(node, include_routes?)` | Лист как данные: блоки, потоки с ролями ICOM, тоннели, id для правок |
-| `render_diagram(node)` · `render_diagram_svg_text(node)` | Лист картинкой PNG или в SVG |
+| `render_diagram(node, form?)` · `render_diagram_svg_text(node, form?)` | Лист картинкой PNG или в SVG — с `form` в бланке IDEF0: шапка (автор, проект, даты, статус, контекст) и подвал (узел, название, номер) |
+| `export_diagram(path, node?, form?, scale?)` | Записать один лист или все в файлы PNG или SVG, в бланке — сразу в отчёт |
 | `check_model(sheet?)` | Замечания по IDEF0 — ошибки и предупреждения — с вызовом-исправлением к каждому |
 | `check_layout(sheet)` | Насколько хорошо нарисован лист: пересечения, обходы, концы стрелок в углах, обратные связи не с той стороны, потерянные подписи — оценка и что за ней |
 | `rename_activity` · `rename_flow` | Переименовать блок; переименовать то, что несёт стрелка, на всех уровнях |

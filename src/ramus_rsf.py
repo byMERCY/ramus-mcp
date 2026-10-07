@@ -560,6 +560,73 @@ class RsfModel:
         diagrams.sort(key=lambda d: len(d.activities), reverse=True)
         return diagrams
 
+    def form_of(self, diagram: Diagram) -> Dict[str, object]:
+        """What the IDEF0 diagram form round a sheet says (its header and footer, as Ramus and
+        FIPS 183 draw them): who made the model and for which project, the sheet's dates and
+        status, its node, title and number among the model's sheets, and its context - the
+        boxes of the sheet above, with the one this sheet decomposes picked out."""
+        acts = self.activities()
+        owner = acts.get(diagram.parent_id)
+        base = diagram.parent_id
+        while base in acts:  # the base function at the root of this sheet's model
+            base = acts[base].parent_id
+        prefs = next((r for r in self.table("IDEF0/attribute_model_preferences")
+                      if _int(r.get("ELEMENT_ID")) == base), {})
+        dates = {}
+        for name in ("F_CREATE_DATE", "F_REV_DATE"):
+            dates[name] = self._per_element("Core/attribute_dates", name, "VALUE")
+        when = diagram.parent_id
+        created = dates["F_CREATE_DATE"].get(when) or prefs.get("CREATE_DATE")
+        revised = dates["F_REV_DATE"].get(when) or prefs.get("CHANGE_DATE") or created
+        statuses = self._per_element("IDEF0/attribute_statuses", "F_STATUS", "TYPE")
+        status = _int(statuses.get(when if owner is not None else
+                                   next((a.element_id for a in diagram.activities), -1)), 0)
+
+        # Sheets numbered as the model is read: the context first, then each decomposition
+        # before the decompositions under it.
+        sheets = {d.parent_id: d for d in self.diagrams()} if "sheet_numbers" not in \
+            self._memo else {}
+        if "sheet_numbers" not in self._memo:
+            order: Dict[int, int] = {}
+            children: Dict[int, List[Activity]] = {}
+            for a in acts.values():
+                if a.has_box:
+                    children.setdefault(a.parent_id, []).append(a)
+            hierarchy = self._hierarchy()
+
+            def walk(parent: int) -> None:
+                if parent in sheets:
+                    order[parent] = len(order) + 1
+                for a in _in_sibling_order(children.get(parent, []), hierarchy, acts):
+                    walk(a.element_id)
+
+            for root in sorted(p for p in sheets if p not in acts):
+                walk(root)
+            self._memo["sheet_numbers"] = order
+        number = self._memo["sheet_numbers"].get(diagram.parent_id)
+
+        context, mark = [], None
+        if owner is not None:
+            above = next((d for d in self.diagrams() if d.parent_id == owner.parent_id), None)
+            if above is not None:
+                for i, a in enumerate(b for b in above.activities if b.has_box):
+                    context.append((a.x, a.y, a.width, a.height))
+                    if a.element_id == owner.element_id:
+                        mark = i
+        names = " ".join(a.name for a in acts.values())
+        return {
+            "author": (prefs.get("PROJECT_AUTOR") or "").strip(),
+            "project": (prefs.get("PROJECT_NAME") or "").strip(),
+            "used_at": (prefs.get("USED_AT") or "").strip(),
+            "date": _day(created), "revision": _day(revised),
+            "status": status if 0 <= status <= 3 else 0,
+            "node": diagram.node,
+            "title": owner.name if owner is not None else diagram.parent_name,
+            "number": str(number) if number else "",
+            "context": context, "context_mark": mark, "top": owner is None,
+            "russian": any("\u0400" <= ch <= "\u04ff" for ch in names),
+        }
+
     def nodes(self) -> Dict[int, List[Tuple[int, str]]]:
         """Every crosspoint node in the model and the segment ends that meet at it: node id ->
         [(sector id, "out" for a segment starting there / "in" for one ending there)]. Inside
@@ -774,6 +841,18 @@ def _end(border: Dict[str, Optional[str]], acts: Dict[int, Activity]) -> End:
     if node_id is not None:
         return End("junction", node=node_id)
     return End("open")
+
+
+def _day(value: Optional[str]) -> str:
+    """A date as Ramus stores it ("9/22/26 2:07 PM") as a form shows it ("22.09.2026")."""
+    if not value:
+        return ""
+    try:
+        month, day, year = value.split()[0].split("/")
+        year = int(year)
+        return f"{int(day):02d}.{int(month):02d}.{year + 2000 if year < 100 else year}"
+    except (ValueError, IndexError):
+        return value.strip()
 
 
 def _argb_hex(value: Optional[str]) -> Optional[str]:

@@ -108,7 +108,7 @@ A sheet is named by the activity it decomposes — `"A-0"` is the context diagra
 decomposition, then `"A1"`, `"A12"`… — and an activity by its number or id.
 
 <details>
-<summary><b>23 tools</b> — click to open</summary>
+<summary><b>24 tools</b> — click to open</summary>
 
 | Tool | What it does |
 |---|---|
@@ -117,7 +117,8 @@ decomposition, then `"A1"`, `"A12"`… — and an activity by its number or id.
 | `create_model(path, activity, author?, project?, notation?)` | A new model — IDEF0, DFD or DFDS — whose context diagram holds the top activity A0 |
 | `list_diagrams()` · `get_function_tree()` | The sheets; the activity tree with IDEF0 numbers |
 | `get_diagram(node, include_routes?)` | One sheet as data: boxes, flows with their ICOM roles, tunnels, ids for editing |
-| `render_diagram(node)` · `render_diagram_svg_text(node)` | One sheet as a PNG, or as SVG |
+| `render_diagram(node, form?)` · `render_diagram_svg_text(node, form?)` | One sheet as a PNG, or as SVG — with `form`, in the IDEF0 diagram form: header (author, project, dates, status, context) and footer (node, title, number) |
+| `export_diagram(path, node?, form?, scale?)` | Write one sheet or all of them to PNG or SVG files, in the diagram form — ready for a report |
 | `check_model(sheet?)` | IDEF0 findings — errors and warnings — each with the call that fixes it |
 | `check_layout(sheet)` | How well a sheet is drawn: crossings, detours, arrow ends in corners, feedback the wrong way round, names astray — a score and the faults behind it |
 | `rename_activity` · `rename_flow` | Rename a box; rename what an arrow carries, on every level |

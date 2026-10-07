@@ -82,8 +82,8 @@ def _dashes(points: List[Tuple[float, float]], pattern):
     return pieces
 
 
-def render_scene_png(scene: Scene) -> bytes:
-    k = SCALE * SUPERSAMPLE
+def render_scene_png(scene: Scene, scale: float = SCALE) -> bytes:
+    k = scale * SUPERSAMPLE
     size = (max(int(math.ceil(scene.width * k)), 1), max(int(math.ceil(scene.height * k)), 1))
     img = Image.new("RGB", size, "#ffffff")
     draw = ImageDraw.Draw(img)
@@ -131,12 +131,13 @@ def render_scene_png(scene: Scene) -> bytes:
                 font=_font(max(int(round(item.size * k)), 1)), anchor=_ANCHORS[item.anchor],
             )
 
-    final = (max(int(round(scene.width * SCALE)), 1), max(int(round(scene.height * SCALE)), 1))
+    final = (max(int(round(scene.width * scale)), 1), max(int(round(scene.height * scale)), 1))
     img = img.resize(final, Image.LANCZOS)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
 
 
-def render_diagram_png(diagram: Diagram, title: str = "") -> bytes:
-    return render_scene_png(build_scene(diagram, title))
+def render_diagram_png(diagram: Diagram, title: str = "", form=None,
+                       scale: float = SCALE) -> bytes:
+    return render_scene_png(build_scene(diagram, title, form), scale)

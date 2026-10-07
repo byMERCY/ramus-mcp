@@ -31,6 +31,7 @@ import layout_quality as layout  # noqa: E402
 from model_editor import EditError, ModelEditor  # noqa: E402
 from ramus_rsf import Activity, Arrow, Diagram, End, RsfModel  # noqa: E402
 from render_png import render_diagram_png  # noqa: E402
+from scene import Form  # noqa: E402
 from render_svg import render_diagram as render_diagram_svg  # noqa: E402
 
 INSTRUCTIONS = """\
@@ -482,25 +483,68 @@ def get_diagram(index: int = 0, node: str = "", include_routes: bool = False) ->
 
 
 @mcp.tool(title="Look at a diagram", annotations=_LOOK)
-def render_diagram(index: int = 0, node: str = "") -> Image:
+def render_diagram(index: int = 0, node: str = "", form: bool = False) -> Image:
     """Draw one diagram and return it as a PNG image, laid out as the model stores it.
 
     Boxes with their node numbers, every arrow along its stored route with head and name, the
     page frame the outside arrows attach to. Pick the sheet by node number (node="A1") or by
-    index from list_diagrams.
+    index from list_diagrams. With ``form`` the sheet is drawn in the IDEF0 diagram form, as
+    printed: a header (author, project, dates, status, the context - the sheet above with this
+    one's box filled in) and a footer (node, title, number).
     """
     d = _diagram(index, node)
-    return Image(data=render_diagram_png(d), format="png")
+    return Image(data=render_diagram_png(d, form=_form(d) if form else None), format="png")
 
 
 @mcp.tool(title="Diagram as SVG", annotations=_LOOK)
-def render_diagram_svg_text(index: int = 0, node: str = "") -> str:
-    """The same diagram as an SVG document (text), for saving or embedding in a page."""
+def render_diagram_svg_text(index: int = 0, node: str = "", form: bool = False) -> str:
+    """The same picture as render_diagram, as an SVG document (text) - for a person to save or
+    embed; ``form`` draws it in the IDEF0 diagram form."""
     d = _diagram(index, node)
-    return render_diagram_svg(d)
+    return render_diagram_svg(d, form=_form(d) if form else None)
 
 
-# ------------------------------------------------------------------------------- the rules
+@mcp.tool(title="Export diagrams to files", annotations=_WRITE)
+def export_diagram(path: str, node: str = "", form: bool = True,
+                   scale: float = 3.0) -> Dict[str, Any]:
+    """Write one diagram - or every diagram of the model - to picture files, for a report or
+    a slide. ``path`` ends in .png or .svg: the file to write for one sheet (``node``, e.g.
+    "A0"), or, with node "all" (or left out), a folder - or a name pattern like
+    "out/{node}.png" - getting one file per sheet, named by its node. ``form`` (on by
+    default) frames each sheet in the IDEF0 diagram form; ``scale`` is pixels per unit of
+    the page (800 units across) for PNG - 3 gives a picture 2400 wide. A relative path starts
+    from the models folder. Existing files are replaced."""
+    _require()
+    base = _models_dir() or os.getcwd()
+    target = path if os.path.isabs(path) else os.path.join(base, path)
+    every = not node or node.strip().lower() == "all"
+    sheets = _Open.diagrams if every else [_diagram(0, node)]
+    ext = os.path.splitext(target)[1].lower()
+    if every and "{node}" not in target:
+        if ext in (".png", ".svg"):
+            raise ValueError('To write every sheet, give a folder or a pattern with {node} '
+                             'in it, e.g. "export/{node}.png".')
+        target = os.path.join(target, "{node}.png")
+        ext = ".png"
+    if ext not in (".png", ".svg"):
+        raise ValueError("The file is a .png or an .svg.")
+    written = []
+    for d in sorted(sheets, key=lambda x: (x.node != "A-0", len(x.node), x.node)):
+        out = target.replace("{node}", d.node)
+        os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
+        frame = _form(d) if form else None
+        if ext == ".svg":
+            with open(out, "w", encoding="utf-8") as fh:
+                fh.write(render_diagram_svg(d, form=frame))
+        else:
+            with open(out, "wb") as fh:
+                fh.write(render_diagram_png(d, form=frame, scale=max(0.5, min(float(scale), 8.0))))
+        written.append({"node": d.node, "file": os.path.abspath(out)})
+    return {"written": written}
+
+
+def _form(d: Diagram) -> Form:
+    return Form(**_Open.model.form_of(d))
 
 
 @mcp.tool(title="Check against IDEF0", annotations=_LOOK)

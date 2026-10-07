@@ -326,6 +326,21 @@ class Editing(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "No sheet 'A9'"):
             server.check_model("A9")
 
+    def test_export_sheets_in_the_idef0_form(self):
+        folder = os.path.join(self._dir.name, "export")
+        written = server.export_diagram(folder)["written"]
+        self.assertEqual({w["node"] for w in written}, {d.node for d in server._Open.diagrams})
+        for w in written:
+            with open(w["file"], "rb") as fh:
+                self.assertEqual(fh.read(4), b"\x89PNG")
+        one = server.export_diagram(os.path.join(folder, "a0.svg"), node="A0")["written"]
+        with open(one[0]["file"], encoding="utf-8") as fh:
+            self.assertIn("<svg", fh.read())
+        with self.assertRaises(ValueError):
+            server.export_diagram(os.path.join(folder, "all.png"))
+        framed = server.render_diagram(node="A0", form=True)
+        self.assertEqual(framed.data[:4], b"\x89PNG")
+
     def test_check_how_a_sheet_is_drawn(self):
         report = server.check_layout("A0")
         self.assertEqual(report["sheet"], "A0")
@@ -383,7 +398,8 @@ class OverStdio(unittest.TestCase):
              "rename_activity", "rename_flow", "add_activity", "add_arrow", "move_activity",
              "delete_activity", "delete_arrow", "tidy_sheet", "layout_sheet", "tidy_labels",
              "save_model",
-             "check_model", "check_layout", "join_levels", "create_model", "list_models"},
+             "check_model", "check_layout", "join_levels", "create_model", "list_models",
+             "export_diagram"},
         )
         by_name = {t.name: t for t in tools.tools}
         self.assertTrue(by_name["render_diagram"].annotations.readOnlyHint)

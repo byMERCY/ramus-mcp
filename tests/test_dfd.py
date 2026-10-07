@@ -179,5 +179,28 @@ class Roles(_Shop):
         self.assertEqual(len(cards), 1)
 
 
+class TheForm(unittest.TestCase):
+
+    def test_the_form_says_who_what_when_and_where(self):
+        from scene import Form, Text
+        with tempfile.TemporaryDirectory() as tmp:
+            ed = ModelEditor.create(os.path.join(tmp, "f.rsf"), "Сделать дело", author="Автор",
+                                    project="Проект")
+            _, acts = _ids(ed)
+            ed.add_activity(acts["A0"], "Начать")
+            model = ed.snapshot()
+            sheets = {d.node: d for d in model.diagrams()}
+            top = model.form_of(sheets["A-0"])
+            low = model.form_of(sheets["A0"])
+            self.assertEqual((top["number"], top["top"], top["author"], top["project"]),
+                             ("1", True, "Автор", "Проект"))
+            self.assertEqual((low["number"], low["node"], low["context_mark"], low["russian"]),
+                             ("2", "A0", 0, True))
+            self.assertRegex(low["date"], r"^\d\d\.\d\d\.\d{4}$")
+            texts = {i.text for i in build_scene(sheets["A0"], form=Form(**low)).items
+                     if isinstance(i, Text)}
+            self.assertTrue({"УЗЕЛ:", "НАЗВАНИЕ:", "НОМЕР:", "КОНТЕКСТ:", "A0", "2"} <= texts)
+
+
 if __name__ == "__main__":
     unittest.main()

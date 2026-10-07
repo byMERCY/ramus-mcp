@@ -101,6 +101,122 @@ Item = Union[Rect, Line, Poly, Dot, Text]
 
 
 @dataclass
+class Form:
+    """The IDEF0 diagram form round a sheet (see RsfModel.form_of)."""
+
+    author: str = ""
+    project: str = ""
+    used_at: str = ""
+    date: str = ""
+    revision: str = ""
+    status: int = 0  # 0 working, 1 draft, 2 recommended, 3 publication
+    node: str = ""
+    title: str = ""
+    number: str = ""
+    context: List[Tuple[float, float, float, float]] = field(default_factory=list)
+    context_mark: Optional[int] = None
+    top: bool = False
+    russian: bool = False
+
+
+# The form's words: FIPS 183, and their Russian as GOST R 50.1.028 has them.
+_FORM_WORDS = {
+    False: {"used_at": "USED AT:", "author": "AUTHOR:", "project": "PROJECT:",
+            "notes": "NOTES:  1  2  3  4  5  6  7  8  9  10", "date": "DATE:", "rev": "REV:",
+            "status": ("WORKING", "DRAFT", "RECOMMENDED", "PUBLICATION"), "reader": "READER",
+            "reader_date": "DATE", "context": "CONTEXT:", "top": "TOP", "node": "NODE:",
+            "title": "TITLE:", "number": "NUMBER:"},
+    True: {"used_at": "ИСПОЛЬЗУЕТСЯ В:", "author": "АВТОР:", "project": "ПРОЕКТ:",
+           "notes": "ЗАМЕЧАНИЯ:  1  2  3  4  5  6  7  8  9  10", "date": "ДАТА:",
+           "rev": "РЕВИЗИЯ:",
+           "status": ("РАЗРАБАТЫВАЕТСЯ", "ЧЕРНОВИК", "РЕКОМЕНДОВАНО", "ПУБЛИКАЦИЯ"),
+           "reader": "ЧИТАТЕЛЬ", "reader_date": "ДАТА", "context": "КОНТЕКСТ:",
+           "top": "ВЕРХ", "node": "УЗЕЛ:", "title": "НАЗВАНИЕ:", "number": "НОМЕР:"},
+}
+FORM_HEADER = 66.0  # the header's height above the page, in model units ...
+FORM_FOOTER = 44.0  # ... and the footer's below it
+FORM_TEXT = 7.5
+FORM_INK = "#000000"
+
+
+def _form(form: Form, width: float, bottom: float) -> List[Item]:
+    """The header above the page (0..``width`` across, the page from 0 down to ``bottom``)
+    and the footer below it: ruled cells with their words, the status ticked, the context
+    drawn small with this sheet's box filled in."""
+    w = _FORM_WORDS[form.russian]
+    top = -FORM_HEADER
+    row = FORM_HEADER / 4
+    size = FORM_TEXT
+    items: List[Item] = []
+
+    def text(x, y, s, anchor="start", sz=size):
+        items.append(Text(x, y, s, sz, FORM_INK, anchor))
+
+    def rule(points, width_=0.8):
+        items.append(Line(points, FORM_INK, width_))
+
+    # The outline: header, page and footer in one; the page's own edges are the frame.
+    items.append(Rect(0.0, top, width, bottom + FORM_FOOTER - top, None, FORM_INK, 1.2))
+    rule([(0.0, 0.0), (width, 0.0)], 1.2)
+    rule([(0.0, bottom), (width, bottom)], 1.2)
+    # Header columns: used at | author, project, notes - date, revision | status | reader,
+    # date | context.
+    c1, c2, c3, c4, c5, c6 = (width * f for f in (0.166, 0.5, 0.52, 0.6875, 0.856, 1.0))
+    for x in (c1, c2, c3, c4, c5):
+        rule([(x, top), (x, 0.0)])
+    for i in range(1, 4):  # the status and reader rows
+        rule([(c2, top + i * row), (c5, top + i * row)])
+    rule([(c4 + (c5 - c4) * 0.62, top), (c4 + (c5 - c4) * 0.62, 0.0)])
+    base = row * 0.72
+    text(2.0, top + base, w["used_at"])
+    if form.used_at:
+        text(2.0, top + row + base, form.used_at)
+    text(c1 + 2.0, top + base, f'{w["author"]} {form.author}')
+    text(c1 + 2.0, top + row + base, f'{w["project"]} {form.project}')
+    text(c1 + 2.0, top + 3 * row + base, w["notes"])
+    split = c1 + (c2 - c1) * 0.62
+    text(split, top + base, f'{w["date"]} {form.date}')
+    text(split, top + row + base, f'{w["rev"]} {form.revision}')
+    for i, label in enumerate(w["status"]):
+        text(c3 + 2.0, top + i * row + base, label)
+        if i == form.status:
+            items.append(Rect(c2 + 3.0, top + i * row + 3.0, c3 - c2 - 6.0, row - 6.0,
+                              FORM_INK))
+    text(c4 + 2.0, top + base, w["reader"])
+    text(c5 - 2.0, top + base, w["reader_date"], "end")
+    text(c5 + 2.0, top + base, w["context"])
+    # The context: the sheet above, drawn small, this sheet's box in black.
+    if form.top:
+        text((c5 + c6) / 2, top + FORM_HEADER * 0.62, w["top"], "middle", size * 1.2)
+    elif form.context:
+        # The page above, shrunk whole - its boxes where they stand on it.
+        x0, y0, x1, y1 = 0.0, 0.0, width, bottom
+        box = (c5 + 6.0, top + row + 2.0, c6 - c5 - 12.0, FORM_HEADER - row - 6.0)
+        k = min(box[2] / max(x1 - x0, 1.0), box[3] / max(y1 - y0, 1.0))
+        ox = box[0] + (box[2] - (x1 - x0) * k) / 2
+        oy = box[1] + (box[3] - (y1 - y0) * k) / 2
+        for i, (x, y, rw, rh) in enumerate(form.context):
+            marked = i == form.context_mark
+            items.append(Rect(ox + (x - x0) * k, oy + (y - y0) * k, max(rw * k, 2.0),
+                              max(rh * k, 1.5), FORM_INK if marked else "#ffffff",
+                              FORM_INK, 0.5))
+    # The footer: node | title | number.
+    f1, f2 = width * 0.2, width * 0.8
+    for x in (f1, f2):
+        rule([(x, bottom), (x, bottom + FORM_FOOTER)])
+    text(2.0, bottom + row * 0.8, w["node"])
+    text(f1 / 2, bottom + FORM_FOOTER * 0.7, form.node, "middle", size * 1.6)
+    text(f1 + 2.0, bottom + row * 0.8, w["title"])
+    for i, line in enumerate(wrap(form.title, f2 - f1 - 20.0, size * 1.6)[:2]):
+        text((f1 + f2) / 2, bottom + FORM_FOOTER * (0.62 if i == 0 else 0.92) - (
+            size * 0.9 if len(wrap(form.title, f2 - f1 - 20.0, size * 1.6)) > 1 else 0.0),
+             line, "middle", size * 1.6)
+    text(f2 + 2.0, bottom + row * 0.8, w["number"])
+    text((f2 + width) / 2, bottom + FORM_FOOTER * 0.7, form.number, "middle", size * 1.6)
+    return items
+
+
+@dataclass
 class Scene:
     """What to draw and on what canvas (``x, y, width, height`` in model units)."""
 
@@ -485,15 +601,28 @@ def heading_of(diagram: Diagram) -> str:
     return diagram.node or diagram.parent_name or "Diagram"
 
 
-def build_scene(diagram: Diagram, title: str = "") -> Scene:
+def build_scene(diagram: Diagram, title: str = "", form: Optional[Form] = None) -> Scene:
     """Everything on one diagram, ready for a backend to draw.
 
     The canvas is the whole page - the frame the model's external arrows attach to - plus a
     strip above it for the heading, grown if anything (a long label, a stray text) falls
-    outside.
+    outside. With a ``form`` the page is framed by the IDEF0 diagram form instead: its header
+    above, its footer below, as on a printed sheet.
     """
     left, top, right, bottom = diagram.frame
-    items: List[Item] = [Rect(left, top, right - left, bottom - top, None, FRAME_COLOR, 0.8, (4.0, 3.0))]
+    if form is not None:
+        items: List[Item] = _form(form, right + PAGE_MARGIN, bottom + PAGE_MARGIN)
+        for a in diagram.activities:
+            items.extend(_box(a, diagram.notation))
+        for arrow in diagram.arrows:
+            items.extend(_arrow(arrow))
+        for arrow in diagram.arrows:
+            items.extend(_label(arrow, diagram.notation))
+        for t in diagram.texts:
+            items.extend(_free_text(t))
+        return Scene(0.0, -FORM_HEADER - 1.0, right + PAGE_MARGIN + 1.0,
+                     bottom + PAGE_MARGIN + FORM_FOOTER + FORM_HEADER + 2.0, items)
+    items = [Rect(left, top, right - left, bottom - top, None, FRAME_COLOR, 0.8, (4.0, 3.0))]
     for a in diagram.activities:
         items.extend(_box(a, diagram.notation))
     for arrow in diagram.arrows:

@@ -45,6 +45,7 @@
     {"name": "get_diagram", "description": "One diagram as data: boxes, arrows with their ICOM roles, free text."},
     {"name": "render_diagram", "description": "One diagram drawn as a picture."},
     {"name": "render_diagram_svg_text", "description": "One diagram as an SVG document."},
+    {"name": "export_diagram", "description": "Write diagrams to PNG or SVG files, in the IDEF0 diagram form - for a report."},
     {"name": "check_model", "description": "Check the model against the rules of IDEF0, with the fix for each finding."},
     {"name": "check_layout", "description": "Say how well a diagram is drawn: crossings, detours, arrow ends in corners, names astray."},
     {"name": "rename_activity", "description": "Rename an activity."},
