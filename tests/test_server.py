@@ -308,6 +308,14 @@ class Editing(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "No sheet 'A9'"):
             server.check_model("A9")
 
+    def test_check_how_a_sheet_is_drawn(self):
+        report = server.check_layout("A0")
+        self.assertEqual(report["sheet"], "A0")
+        self.assertIsInstance(report["score"], float)
+        self.assertIsInstance(report["faults"], dict)
+        with self.assertRaises(ValueError):
+            server.check_layout("A9")
+
     def test_tidy_a_sheet_and_its_names_by_number(self):
         result = server.tidy_sheet("A0")
         self.assertEqual(result["sheet"], "A0")
@@ -350,7 +358,7 @@ class OverStdio(unittest.TestCase):
              "get_diagram", "render_diagram", "render_diagram_svg_text",
              "rename_activity", "rename_flow", "add_activity", "add_arrow", "move_activity",
              "delete_activity", "delete_arrow", "tidy_sheet", "tidy_labels", "save_model",
-             "check_model", "join_levels", "create_model", "list_models"},
+             "check_model", "check_layout", "join_levels", "create_model", "list_models"},
         )
         by_name = {t.name: t for t in tools.tools}
         self.assertTrue(by_name["render_diagram"].annotations.readOnlyHint)

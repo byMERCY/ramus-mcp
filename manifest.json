@@ -46,6 +46,7 @@
     {"name": "render_diagram", "description": "One diagram drawn as a picture."},
     {"name": "render_diagram_svg_text", "description": "One diagram as an SVG document."},
     {"name": "check_model", "description": "Check the model against the rules of IDEF0, with the fix for each finding."},
+    {"name": "check_layout", "description": "Say how well a diagram is drawn: crossings, detours, arrow ends in corners, names astray."},
     {"name": "rename_activity", "description": "Rename an activity."},
     {"name": "rename_flow", "description": "Rename what an arrow carries, on every level."},
     {"name": "add_activity", "description": "Add an activity box to a decomposition."},

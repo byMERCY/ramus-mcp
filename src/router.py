@@ -201,7 +201,8 @@ def simplify(points: Iterable[Point]) -> List[Point]:
 def route(start: Point, start_dir: Point, end: Point, end_dir: Point,
           obstacles: Sequence[Rect], bounds: Rect, lines: Sequence[Segment] = (),
           margin: float = MARGIN, labels: Sequence[Rect] = (),
-          costs: Optional[Costs] = None) -> List[Point]:
+          costs: Optional[Costs] = None,
+          extra: Optional[Callable[[Point, Point], float]] = None) -> List[Point]:
     """An orthogonal route from ``start`` to ``end``.
 
     ``start_dir`` is the way the route leaves ``start`` (out of the side of a box, or into the
@@ -209,6 +210,8 @@ def route(start: Point, start_dir: Point, end: Point, end_dir: Point,
     are the boxes to keep clear of - the two the arrow joins included - and ``lines`` the
     arrows already drawn. ``bounds`` is the drawable area. ``costs``, if given, is a Costs
     over those same lines and labels, kept by a caller routing many times on one sheet.
+    ``extra(a, b)``, if given, is what this arrow in particular pays for the piece a-b on top
+    of the usual - never less than nothing (see :func:`feedback_price`).
 
     The first and last pieces run straight out of ``start`` and into ``end`` and may be any
     length from MIN_STUB up, so a route can turn in a gap between two boxes narrower than two
@@ -319,7 +322,7 @@ def route(start: Point, start_dir: Point, end: Point, end_dir: Point,
             known[n] = out
         return out
 
-    best = _cheapest(start, start_dir, end, end_dir, neighbours, stub_cost, costs)
+    best = _cheapest(start, start_dir, end, end_dir, neighbours, stub_cost, costs, extra)
     if best is None:
         # Nowhere clear to go: an elbow, the honest fallback.
         s1 = (start[0] + start_dir[0] * margin, start[1] + start_dir[1] * margin)
@@ -359,7 +362,8 @@ def _corridors(levels: Sequence[float], edges: Sequence[float], lo: float,
 def _cheapest(start: Point, start_dir: Point, end: Point, end_dir: Point,
               neighbours: Callable[[Point], List[Point]],
               stub_cost: Dict[Tuple[Point, Point], float],
-              costs: Costs) -> Optional[List[Point]]:
+              costs: Costs,
+              extra: Optional[Callable[[Point, Point], float]] = None) -> Optional[List[Point]]:
     """A* over (node, heading), so bends can be priced. The estimate of what is left - the
     Manhattan distance to the end, plus a bend for each turn there is no arriving without -
     never exceeds the true price (every piece costs at least its length, every turn a BEND),
@@ -382,9 +386,11 @@ def _cheapest(start: Point, start_dir: Point, end: Point, end_dir: Point,
             if d == (-heading[0], -heading[1]):
                 continue  # no doubling back on itself
             step = abs(nxt[0] - node[0]) + abs(nxt[1] - node[1])
-            extra = BEND if d != heading else 0.0
-            extra += stub_cost.get((node, nxt), 0.0)
-            new = cost + step + extra + costs.piece(node, nxt)
+            extra_cost = BEND if d != heading else 0.0
+            extra_cost += stub_cost.get((node, nxt), 0.0)
+            if extra is not None:
+                extra_cost += extra(node, nxt)
+            new = cost + step + extra_cost + costs.piece(node, nxt)
             if new < dist.get((nxt, d), float("inf")):
                 dist[(nxt, d)] = new
                 came[(nxt, d)] = (node, heading)
@@ -418,70 +424,140 @@ def attach(box: Rect, side: int, taken: Sequence[float],
 
 
 CROWDED = 6.0  # per unit an end comes closer than the spacing to another on its side
+CENTRE = 60.0  # what an end on a box pays at a corner of its side, for being off the middle -
+#                growing with the square of the distance, so the middle half is cheap and the
+#                corners are not worth a shorter route; lining up for a straight run (two bends
+#                saved) still is
+OUT_OF_PLACE = 40.0  # an end in a corner, or on the box's number, where nothing else is free
 _EVEN = (1 / 2, 1 / 3, 2 / 3, 1 / 4, 3 / 4, 1 / 5, 2 / 5, 3 / 5, 4 / 5, 1 / 6, 5 / 6)
+
+
+def corner_zone(length: float) -> float:
+    """How near a corner an arrow's end may come on a side of a box this long before it looks
+    pushed into the corner: a fifth of the side, at least 8 and at most 20."""
+    return min(20.0, max(8.0, 0.2 * length))
 
 
 def attach_options(box: Rect, side: int, taken: Sequence[float],
                    prefer: Sequence[float] = (), spacing: float = 12.0,
-                   corner: float = 8.0) -> List[Tuple[float, float]]:
+                   corner: Optional[float] = 8.0, centre: float = 0.0,
+                   avoid: Sequence[Tuple[float, float]] = ()) -> List[Tuple[float, float]]:
     """The places on a side of a box worth trying for an arrow's end, each with a price.
 
-    Free preferred coordinates first (free of charge), then the free even divisions of the side
-    (a little dearer the further down the list, which keeps ends near the middle when nothing
-    else matters), and - when the side is crowded - the spots farthest from the ends already
-    there, priced by how much closer than ``spacing`` they come. Whoever routes the arrow tries
-    them and adds the price to the route's own cost.
+    Free preferred coordinates first, then the free even divisions of the side (a little
+    dearer the further down the list, which keeps ends near the middle when nothing else
+    matters), and - when the side is crowded - the spots farthest from the ends already there,
+    priced by how much closer than ``spacing`` they come. Whoever routes the arrow tries them
+    and adds the price to the route's own cost.
+
+    ``corner`` is how near either corner a place may be (None: :func:`corner_zone`). With a
+    ``centre`` price every place also pays for its distance from the middle of the side -
+    ``centre`` at a corner, a quarter of it halfway there. ``avoid`` are stretches of the side
+    (from, to) to keep off, like the corner where the box's number is written: a place there is
+    offered only when the side is crowded, and dearly.
     """
     x, y, w, h = box
-    lo, hi = (y + corner, y + h - corner) if side in (SIDE_LEFT, SIDE_RIGHT) else \
-        (x + corner, x + w - corner)
+    a0, a1 = (y, y + h) if side in (SIDE_LEFT, SIDE_RIGHT) else (x, x + w)
+    zone = corner_zone(a1 - a0) if corner is None else corner
+    lo, hi = a0 + zone, a1 - zone
     if hi <= lo:
-        return [((lo + hi) / 2, 0.0)]
+        return [((a0 + a1) / 2, 0.0)]
     near = [t for t in taken if lo - spacing < t < hi + spacing]
+    mid, half = (a0 + a1) / 2, (a1 - a0) / 2
 
     def gap(c: float) -> float:
         return min((abs(c - t) for t in near), default=float("inf"))
 
+    def placed(c: float) -> float:
+        price = centre * ((c - mid) / half) ** 2
+        if any(f <= c <= t for f, t in avoid):
+            price += OUT_OF_PLACE
+        return price
+
     out: List[Tuple[float, float]] = []
     seen = set()
 
-    def offer(c: float, price: float) -> None:
+    def offer(c: float, price: float, first: float = lo, last: float = hi) -> None:
         key = round(c, 3)
-        if lo <= c <= hi and key not in seen:
+        if first <= c <= last and key not in seen:
             seen.add(key)
-            out.append((c, price))
+            out.append((c, price + placed(c)))
+
+    def fits(c: float) -> bool:
+        return gap(c) >= spacing and not any(f <= c <= t for f, t in avoid)
 
     for c in prefer:
-        if c is not None and gap(c) >= spacing:
+        if c is not None and fits(c):
             offer(c, 0.0)
     for i, f in enumerate(_EVEN[:3]):  # the middle and the thirds
         c = lo + (hi - lo) * f
-        if gap(c) >= spacing:
+        if fits(c):
             offer(c, 1.0 + 0.5 * i)
-    for c in (lo, hi):  # the two ends of the side, if free: often what keeps arrows apart
-        if gap(c) >= spacing:
+    edges = [lo, hi]
+    for f, t in avoid:  # the edge of a stretch kept off is as good as a corner
+        edges += [f - 0.5, t + 0.5]
+    for c in edges:  # the ends of the free stretch: often what keeps arrows apart
+        if fits(c):
             offer(c, 2.5)
     for i, f in enumerate(_EVEN[3:], start=3):
         c = lo + (hi - lo) * f
-        if gap(c) >= spacing:
+        if fits(c):
             offer(c, 1.0 + 0.5 * i)
     inside = sorted(t for t in near if lo <= t <= hi)
     for c in [lo, hi] + [(a + b) / 2 for a, b in zip(inside, inside[1:])] + list(prefer):
         if c is not None:
             offer(c, 10.0 + CROWDED * max(0.0, spacing - gap(c)))
+    # A side too crowded for its middle stretch: into the corners, at a price.
+    if not any(gap(c) >= spacing for c, _ in out):
+        for c in (a0 + spacing / 2, a1 - spacing / 2):
+            offer(c, OUT_OF_PLACE + 10.0 + CROWDED * max(0.0, spacing - gap(c)), a0, a1)
     return out
 
 
 def route_cost(points: Sequence[Point], lines: Sequence[Segment] = (),
-               labels: Sequence[Rect] = (), costs: Optional[Costs] = None) -> float:
+               labels: Sequence[Rect] = (), costs: Optional[Costs] = None,
+               extra: Optional[Callable[[Point, Point], float]] = None) -> float:
     """What a finished route costs by the router's own measure: its length, a price per bend,
-    and its crossings of and runs along the arrows in ``lines`` (or those ``costs`` holds)."""
+    and its crossings of and runs along the arrows in ``lines`` (or those ``costs`` holds) -
+    plus what ``extra`` asks for its pieces, if given."""
     pieces = list(zip(points, points[1:]))
     cost = sum(abs(b[0] - a[0]) + abs(b[1] - a[1]) for a, b in pieces)
     cost += BEND * max(0, len(points) - 2)
     if costs is None:
         costs = Costs(lines, labels)
-    return cost + sum(costs.piece(a, b) for a, b in pieces if a != b)
+    cost += sum(costs.piece(a, b) for a, b in pieces if a != b)
+    if extra is not None:
+        cost += sum(extra(a, b) for a, b in pieces if a != b)
+    return cost
+
+
+THROUGH_BOX = 1000.0  # a route that runs through a box: only the fallback elbow ever does
+
+
+def through_boxes(points: Sequence[Point], boxes: Sequence[Rect]) -> int:
+    """How many of ``boxes`` a route runs through - the way a planner tells the elbow that
+    :func:`route` falls back on, when there is no way round, from a real route."""
+    return sum(1 for r in boxes
+               if any(a != b and _crosses_rect(a, b, r) for a, b in zip(points, points[1:])))
+
+
+WRONG_WAY_ROUND = 120.0  # feedback drawn round the wrong side of the box it leaves
+
+
+def feedback_price(source: Rect, over: bool) -> Callable[[Point, Point], float]:
+    """The ``extra`` for an output fed back to a box further left: IDEF0 draws feedback into a
+    control up and over, into an input or a mechanism down and under - so a piece running back
+    to the left beside or below the box it leaves (over), or beside or above it (under), pays
+    WRONG_WAY_ROUND."""
+    top, bottom = source[1], source[1] + source[3]
+
+    def price(a: Point, b: Point) -> float:
+        if a[1] != b[1] or b[0] >= a[0]:
+            return 0.0
+        wrong = a[1] > top if over else a[1] < bottom
+        return WRONG_WAY_ROUND if wrong else 0.0
+
+    return price
 
 
 def point_on(box: Rect, side: int, along: float) -> Point:

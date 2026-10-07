@@ -292,6 +292,27 @@ class RsfDocument:
         return self._sequences_dirty or self._dropped or \
             any(t.dirty for t in self._tables.values())
 
+    # ------------------------------------------------------- trying a change
+
+    def checkpoint(self) -> object:
+        """Everything a change can touch, copied, so :meth:`restore` can take the document
+        back to this moment - for an edit that is tried, measured and perhaps thrown away.
+        Members dropped since are not brought back."""
+        tables = {name: ([dict(r) for r in t.rows], t.dirty) for name, t in self._tables.items()}
+        return (tables, self._sequences_text, self._sequences_dirty, self._next_element,
+                dict(self._handed_out))
+
+    def restore(self, state: object) -> None:
+        tables, self._sequences_text, self._sequences_dirty, self._next_element, handed = state
+        self._handed_out = dict(handed)
+        for name in list(self._tables):
+            if name not in tables:
+                del self._tables[name]  # read after the checkpoint, so as it is in the file
+        for name, (rows, dirty) in tables.items():
+            t = self._tables[name]
+            t.rows = [dict(r) for r in rows]
+            t.dirty = dirty
+
     # ---------------------------------------------------- branches & names
 
     def current_branch(self) -> int:

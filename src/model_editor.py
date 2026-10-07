@@ -21,18 +21,20 @@ from typing import Dict, List, Optional, Tuple
 
 try:
     from . import blank_model
+    from . import layout_quality as lq
     from . import router as rt
     from . import visual_data as vd
     from .rsf_document import RsfDocument, Row
     from .ramus_rsf import FRAME_BOTTOM_RAMUS3, FRAME_LEFT, FRAME_RIGHT, FRAME_TOP, RsfModel
-    from .scene import label_width, wrap
+    from .scene import NUMBER_SIZE, label_width, text_width, wrap
 except ImportError:  # pragma: no cover - script execution
     import blank_model
+    import layout_quality as lq
     import router as rt
     import visual_data as vd
     from rsf_document import RsfDocument, Row
     from ramus_rsf import FRAME_BOTTOM_RAMUS3, FRAME_LEFT, FRAME_RIGHT, FRAME_TOP, RsfModel
-    from scene import label_width, wrap
+    from scene import NUMBER_SIZE, label_width, text_width, wrap
 
 TEXTS = "Core/attribute_texts"
 FRAME_RAMUS3 = (FRAME_LEFT, FRAME_TOP, FRAME_RIGHT, FRAME_BOTTOM_RAMUS3)
@@ -959,31 +961,70 @@ class ModelEditor:
             t.remove(r)
         self._write_points(sector, points, first, last)
 
+    def _sheet(self, sheet_id: int):
+        sheet = next((d for d in self.snapshot().diagrams() if d.parent_id == sheet_id), None)
+        if sheet is None:
+            raise EditError(f"Activity {sheet_id} has no decomposition sheet.")
+        return sheet
+
+    def layout_report(self, sheet_id: int) -> Dict[str, object]:
+        """How well the sheet is drawn (layout_quality.report)."""
+        return lq.report(self._sheet(sheet_id))
+
     def tidy_sheet(self, sheet_id: int, passes: int = 3) -> Dict[str, object]:
-        """Lay a sheet's arrows out again, one at a time with the others where they are: each
-        is rerouted - its ends free to slide along their sides, an end on a node kept - and the
-        new route is kept only if it is clearly better (fewer crossings, bends, crowding). A few
-        passes let arrows drawn early make way for ones drawn after them. Then the names are
-        tidied (see tidy_labels). Boxes do not move."""
+        """Lay a sheet's arrows out again and keep what reads better.
+
+        Each arrow is rerouted with the others where they are - its ends free to slide along
+        their sides, an end on a node kept - and the new route is kept if the sheet's measure
+        (layout_quality: crossings, bends, detours, ends in corners, feedback the wrong way
+        round ...) gets better for it; a few passes let arrows drawn early make way for ones
+        drawn after them. Then the ends on each side of each box are spread out evenly, in the
+        order that keeps their arrows from crossing; pairs of arrows that still cross are
+        drawn again together; and the names are tidied (see tidy_labels). If the sheet does
+        not come out better as a whole, it is left exactly as it was. Boxes do not move."""
         if self._version() != 2:
             raise EditError("Arrows can be rerouted in files in the Ramus 3 format only.")
+        sheet = self._sheet(sheet_id)
+        before = _Layout(sheet).geometry().assess()
+        saved = self.doc.checkpoint()
+        rerouted: List[int] = []
+
+        def note(sectors) -> None:
+            rerouted.extend(s for s in sectors if s not in rerouted)
+
+        note(self._reroute(sheet_id, passes))
+        note(self._spread_ends(sheet_id))
+        note(self._uncross(sheet_id))
+        result = self.tidy_labels(sheet_id)
+        after = _Layout(self._sheet(sheet_id)).geometry().assess()
+        if after.score >= before.score and (rerouted or result["labels_moved"]):
+            self.doc.restore(saved)
+            return {"sheet": sheet.node, "rerouted": [], "labels_moved": [],
+                    "layout": {"before": before.score, "after": before.score},
+                    "note": "Nothing found that reads better; the sheet is as it was."}
+        result["rerouted"] = rerouted
+        result["layout"] = {"before": before.score, "after": after.score,
+                            "faults_left": after.counts()}
+        return result
+
+    def _reroute(self, sheet_id: int, passes: int) -> List[int]:
+        """Each arrow routed again with the rest where they are; the new route kept if the
+        sheet's measure owes less to it (its name left out - names are tidied after)."""
         rerouted: List[int] = []
         for _ in range(passes):
-            sheet = next((d for d in self.snapshot().diagrams() if d.parent_id == sheet_id), None)
-            if sheet is None:
-                raise EditError(f"Activity {sheet_id} has no decomposition sheet.")
+            sheet = self._sheet(sheet_id)
             layout = _Layout(sheet)
+            geom = layout.geometry()
             changed = False
             for a in sheet.arrows:
-                if not a.has_route:
+                if not a.has_route or a.sector_id not in geom.arrows:
                     continue
                 start = layout.anchor_from(a.start, "start", a.points)
                 end = layout.anchor_from(a.end, "end", a.points)
                 if start.point is not None and end.point is not None and len(a.points) <= 2:
                     continue
-                now = layout.cost_of(layout.routes[a.sector_id], start, end, a.sector_id)
                 points, _ = layout.plan_with_cost(start, end, exclude=a.sector_id)
-                if layout.cost_of(points, start, end, a.sector_id) < now - _WORTH_IT:
+                if self._better(geom, a.sector_id, points):
                     self._replace_route(a.sector_id, points, start, end)
                     layout.update(a.sector_id, points)
                     if a.sector_id not in rerouted:
@@ -991,27 +1032,110 @@ class ModelEditor:
                     changed = True
             if not changed:
                 break
-        for s in self._uncross(sheet_id):
-            if s not in rerouted:
-                rerouted.append(s)
-        result = self.tidy_labels(sheet_id)
-        result["rerouted"] = rerouted
-        return result
+        return rerouted
+
+    @staticmethod
+    def _better(geom: "lq.SheetGeometry", sector: int, points) -> bool:
+        """Does the sheet read better with this segment drawn along ``points``? If so the
+        measured geometry keeps the new route; if not, the old one."""
+        arrow = geom.arrows[sector]
+        old_points = arrow.points
+        if [tuple(p) for p in points] == [tuple(p) for p in old_points]:
+            return False
+        was = geom.contribution(sector, own_label=False)
+        arrow.points = list(points)
+        if geom.contribution(sector, own_label=False) < was - _WORTH_IT:
+            return True
+        arrow.points = old_points
+        return False
+
+    def _spread_ends(self, sheet_id: int) -> List[int]:
+        """Spread the arrow ends on each side of each box out evenly - at the halves, thirds,
+        quarters of the side - in the order of where their arrows come from, so that they do
+        not cross on the way in; reroute those arrows, and keep it for each side where the
+        sheet reads better."""
+        sheet = self._sheet(sheet_id)
+        layout = _Layout(sheet)
+        geom = layout.geometry()
+        arrows = {a.sector_id: a for a in sheet.arrows if a.sector_id in geom.arrows}
+        sides: Dict[Tuple[int, str], List[Tuple[int, int]]] = {}
+        for s, a in arrows.items():
+            for which, e in ((0, a.start), (1, a.end)):
+                if e.kind == "activity" and e.side in _SIDE_NUMBERS and e.activity_id in layout.boxes:
+                    sides.setdefault((e.activity_id, e.side), []).append((s, which))
+        changed: List[int] = []
+        for (box_id, side_name), ends in sorted(sides.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+            side = _SIDE_NUMBERS[side_name]
+            slots = _even_slots(layout.boxes[box_id], side, len(ends),
+                                layout.number_zone(box_id, side))
+            axis = 1 if side in (rt.SIDE_LEFT, rt.SIDE_RIGHT) else 0
+
+            def came_from(end):
+                s, which = end
+                pts = layout.routes[s]
+                far = pts[-1] if which == 0 else pts[0]
+                here = pts[0] if which == 0 else pts[-1]
+                return (far[axis], here[axis])
+
+            ordered = sorted(ends, key=came_from)
+            now = [layout.routes[s][0 if which == 0 else -1][axis] for s, which in ordered]
+            if all(abs(a - b) < 1.0 for a, b in zip(now, slots)):
+                continue
+            trial: Dict[int, list] = {}
+            anchors, kept = {}, {}
+            saved = {s: layout.routes[s] for s, _ in ordered}
+            for (s, which), c in zip(ordered, slots):
+                a = arrows[s]
+                start = layout.anchor_from(a.start, "start", layout.routes[s])
+                end = layout.anchor_from(a.end, "end", layout.routes[s])
+                kept[s] = (start, end)  # what the route is written with: ends free on sides
+                p = rt.point_on(layout.boxes[box_id], side, c)
+                pinned = _Anchor((p[0], p[1], 0.0, 0.0), side,
+                                 (start if which == 0 else end).direction, "fixed", point=p)
+                anchors[s] = (pinned, end) if which == 0 else (start, pinned)
+            for s, _ in ordered:
+                layout.routes.pop(s)
+            for s, _ in ordered:
+                trial[s] = layout.plan(*anchors[s], exclude=s)
+                layout.routes[s] = trial[s]
+            for s in trial:
+                geom.arrows[s].points = saved[s]
+            was = sum(geom.contribution(s, own_label=False) for s in trial)
+            for s, pts in trial.items():
+                geom.arrows[s].points = list(pts)
+            now_points = sum(geom.contribution(s, own_label=False) for s in trial)
+            if now_points < was - _WORTH_IT:
+                for s, pts in trial.items():
+                    self._replace_route(s, pts, *kept[s])
+                    if s not in changed:
+                        changed.append(s)
+            else:
+                for s in trial:
+                    geom.arrows[s].points = saved[s]
+                    layout.routes[s] = saved[s]
+        return changed
 
     def _uncross(self, sheet_id: int) -> List[int]:
         """Two arrows that cross often cannot be helped one at a time - each is the best it can
         be with the other where it is - while drawn the other way round neither crosses. For
         each crossing pair: take both up, route them again in either order, and keep the better
-        result if it beats what is there."""
-        sheet = next(d for d in self.snapshot().diagrams() if d.parent_id == sheet_id)
+        result if the sheet reads better for it."""
+        sheet = self._sheet(sheet_id)
         layout = _Layout(sheet)
-        arrows = {a.sector_id: a for a in sheet.arrows if a.has_route}
+        geom = layout.geometry()
+        arrows = {a.sector_id: a for a in sheet.arrows if a.sector_id in geom.arrows}
         anchors = {s: (layout.anchor_from(a.start, "start", a.points),
                        layout.anchor_from(a.end, "end", a.points)) for s, a in arrows.items()}
         changed: List[int] = []
+
+        def measure(routes) -> float:
+            for s, pts in routes.items():
+                geom.arrows[s].points = list(pts)
+            return sum(geom.contribution(s, own_label=False) for s in routes)
+
         for first, second in _crossing_pairs(layout.routes, arrows):
             routes = {s: layout.routes[s] for s in (first, second)}
-            now = sum(layout.cost_of(routes[s], *anchors[s], s) for s in routes)
+            now = measure(routes)
             best = None
             for ends in _swaps(first, second, anchors, routes):
                 for order in ((first, second), (second, first)):
@@ -1022,14 +1146,16 @@ class ModelEditor:
                         layout.routes.pop(s, None)
                         trial[s] = layout.plan(*ends[s], exclude=s)
                         layout.routes[s] = trial[s]
-                    total = sum(layout.cost_of(trial[s], *anchors[s], s) for s in trial)
+                    total = measure(trial)
                     if best is None or total < best[0]:
-                        best = (total, dict(trial))
+                        best = (total, dict(trial), ends)
                     layout.routes.update(routes)
+            measure(routes)
             if best[0] < now - _WORTH_IT:
                 for s, pts in best[1].items():
                     self._replace_route(s, pts, *anchors[s])
                     layout.routes[s] = pts
+                    geom.arrows[s].points = list(pts)
                     if s not in changed:
                         changed.append(s)
         return changed
@@ -1554,6 +1680,18 @@ def _crossing_pairs(routes, arrows) -> List[Tuple[int, int]]:
     return out
 
 
+def _even_slots(box, side: int, n: int, avoid=()) -> List[float]:
+    """Where ``n`` ends go on a side of a box, evenly spaced - its half, thirds, quarters ...
+    - unless one would sit in ``avoid`` (the box's number): then evenly over what is left."""
+    x, y, w, h = box
+    a0, a1 = (y, y + h) if side in (rt.SIDE_LEFT, rt.SIDE_RIGHT) else (x, x + w)
+    slots = [a0 + (a1 - a0) * (i + 1) / (n + 1) for i in range(n)]
+    if any(f <= c <= t for c in slots for f, t in avoid):
+        cut = min([a1] + [f for f, t in avoid if f > a0])
+        slots = [a0 + (cut - a0) * (i + 1) / (n + 1) for i in range(n)]
+    return slots
+
+
 def _point_type(p, q) -> int:
     """POINT_TYPE of a route's point on a node: 0 where the piece off it is horizontal, 1 where
     it is vertical (so Ramus reads it from the files it writes)."""
@@ -1589,7 +1727,7 @@ _SIDE_NUMBERS = {name: side for side, name in _SIDE_NAMES.items()}
 _APPROACH = 3 * rt.MARGIN  # how far before a perpendicular end a frame arrow turns towards it
 _TRIES = 8  # places tried at each end of an arrow
 _FORK_CLEAR = 14.0  # a fork keeps this far from either end of the piece it is on
-_WORTH_IT = 5.0  # tidy_sheet keeps a new route only if it is cheaper by more than this
+_WORTH_IT = 1.0  # tidy_sheet keeps a change only if the sheet's measure drops by more
 
 
 @dataclass
@@ -1603,9 +1741,11 @@ class _Anchor:
     direction: Tuple[float, float]
     kind: str  # "activity", "frame" or "fixed"
     owner: Optional[int] = None  # the box, for an end on one
-    corner: float = 8.0
+    corner: Optional[float] = 8.0  # how near a corner it may come (None: rt.corner_zone)
     point: Optional[Tuple[float, float]] = None  # a fixed end
     keep: Optional[float] = None  # where it was along the side: tried along with the rest
+    centre: float = 0.0  # what being off the middle of the side costs (rt.attach_options)
+    avoid: Tuple[Tuple[float, float], ...] = ()  # stretches of the side to keep off
 
 
 class _Layout:
@@ -1617,11 +1757,44 @@ class _Layout:
         left, top, right, bottom = sheet.frame
         self.frame = (left, top, right - left, bottom - top)
         self.boxes = {a.element_id: _box(a) for a in sheet.activities}
+        self.numbers = {a.element_id: a.number for a in sheet.activities}
         self.routes = {a.sector_id: list(a.points) for a in sheet.arrows if a.has_route}
         self.ends = {a.sector_id: (a.start, a.end) for a in sheet.arrows}
         self.labels = {a.sector_id: _label_rect(a.label) for a in sheet.arrows
                        if a.label is not None and a.label.width > 0 and a.label.height > 0}
+        self.tildes = {a.sector_id for a in sheet.arrows
+                       if a.label is not None and a.label.tilde_pos is not None}
+        self.flows = {a.sector_id: a.flow for a in sheet.arrows}
+        self.names_of = {a.sector_id: a.name for a in sheet.arrows}
+        self.stubs = {a.sector_id for a in sheet.arrows if a.geometry == "stub"}
         self.texts = [(t.x, t.y, t.width, t.height) for t in sheet.texts]
+
+    def geometry(self) -> "lq.SheetGeometry":
+        """The sheet as it now stands, to be measured (layout_quality)."""
+        boxes = [lq.BoxGeom(i, r, self.numbers.get(i, "")) for i, r in self.boxes.items()]
+        arrows = [lq.ArrowGeom(s, self.flows.get(s, s), list(pts), lq.end_info(self.ends[s][0]),
+                               lq.end_info(self.ends[s][1]), self.labels.get(s),
+                               s in self.tildes, self.names_of.get(s, ""))
+                  for s, pts in self.routes.items() if s not in self.stubs and len(pts) >= 2]
+        return lq.SheetGeometry(boxes, arrows, self.frame, self.texts)
+
+    def number_zone(self, box_id: int, side: int) -> Tuple[Tuple[float, float], ...]:
+        """The stretch of a box's side its number is written beside (bottom right), if it
+        is on that side - an arrow's end there sits on the number."""
+        number = self.numbers.get(box_id)
+        if not number:
+            return ()
+        x, y, w, h = self.boxes[box_id]
+        if side == rt.SIDE_RIGHT:
+            return ((y + h - NUMBER_SIZE - 4.0, y + h),)
+        if side == rt.SIDE_BOTTOM:
+            return ((x + w - text_width(number, NUMBER_SIZE) - 7.0, x + w),)
+        return ()
+
+    def _box_anchor(self, box_id: int, side: int, direction, keep=None) -> _Anchor:
+        return _Anchor(self.boxes[box_id], side, direction, "activity", owner=box_id,
+                       corner=None, keep=keep, centre=rt.CENTRE,
+                       avoid=self.number_zone(box_id, side))
 
     def lines(self, exclude: Optional[int] = None):
         return [(p, q) for s, pts in self.routes.items() if s != exclude
@@ -1655,9 +1828,8 @@ class _Layout:
         """The anchor for one end of a new arrow."""
         out = rt.OUTWARD[spec.side]
         if spec.kind == "activity":
-            return _Anchor(self.boxes[spec.activity.element_id], spec.side,
-                           out if which == "start" else _back(out), "activity",
-                           owner=spec.activity.element_id)
+            return self._box_anchor(spec.activity.element_id, spec.side,
+                                    out if which == "start" else _back(out))
         return _Anchor(self.frame, spec.side, _back(out) if which == "start" else out,
                        "frame", corner=2 * rt.MARGIN)
 
@@ -1680,8 +1852,8 @@ class _Layout:
             if end.activity_id == moved and old_rect is not None and old_rect[axis + 2] > 0:
                 share = (keep - old_rect[axis]) / old_rect[axis + 2]
                 keep = rect[axis] + rect[axis + 2] * min(1.0, max(0.0, share))
-            return _Anchor(rect, side, out if which == "start" else _back(out), "activity",
-                           owner=end.activity_id, keep=keep)
+            return self._box_anchor(end.activity_id, side, out if which == "start" else _back(out),
+                                    keep)
         rest = points[1:] if which == "start" else points[-2::-1]
         q = next((r for r in rest if r != p), (p[0] + 1.0, p[1]))  # a route of one point
         direction = rt._direction(p, q) if which == "start" else rt._direction(q, p)
@@ -1700,7 +1872,8 @@ class _Layout:
         for q in other_points:
             prefs.append(q[axis] + sign * other.direction[axis] * _APPROACH)
         found = rt.attach_options(anchor.rect, anchor.side, self.taken(anchor, exclude), prefs,
-                                  corner=anchor.corner)
+                                  corner=anchor.corner, centre=anchor.centre,
+                                  avoid=anchor.avoid)
         found.sort(key=lambda o: o[1])
         return [(rt.point_on(anchor.rect, anchor.side, c), price) for c, price in found[:_TRIES]]
 
@@ -1710,7 +1883,8 @@ class _Layout:
 
     def cost_of(self, points, start: _Anchor, end: _Anchor, exclude: Optional[int] = None):
         """What a route costs as it stands, by the measure plan_with_cost uses."""
-        return rt.route_cost(points, self.lines(exclude), self.names(exclude)) + \
+        return rt.route_cost(points, self.lines(exclude), self.names(exclude),
+                             extra=self.feedback(start, end)) + \
             self.crowding(start, points[0], exclude) + self.crowding(end, points[-1], exclude)
 
     def plan_with_cost(self, start: _Anchor, end: _Anchor, exclude: Optional[int] = None):
@@ -1721,6 +1895,7 @@ class _Layout:
         names = self.names(exclude)
         costs = rt.Costs(lines, names)
         boxes = list(self.boxes.values())
+        extra = self.feedback(start, end)
         s_base = [p for p, _ in self._options(start, end, False, [], exclude)]
         e_base = [p for p, _ in self._options(end, start, True, [], exclude)]
         # Cheapest-looking pairs first; once even the least a pair could cost is no better than
@@ -1737,13 +1912,24 @@ class _Layout:
             if best is not None and least >= best[0]:
                 break
             pts = rt.route(sp, start.direction, ep, end.direction, boxes, self.frame, lines,
-                           labels=names, costs=costs)
-            cost = rt.route_cost(pts, costs=costs) + price
+                           labels=names, costs=costs, extra=extra)
+            cost = rt.route_cost(pts, costs=costs, extra=extra) + price +                 rt.THROUGH_BOX * rt.through_boxes(pts, boxes)
             if best is None or cost < best[0]:
                 best = (cost, pts)
         if best is None:
             raise EditError("There is no way to draw that arrow: its two ends meet.")
         return best[1], best[0]
+
+    def feedback(self, start: _Anchor, end: _Anchor):
+        """The router's ``extra`` for an output fed back into a box further left - priced to
+        go over the top into a control, under the bottom into an input or mechanism - or None
+        for any other arrow."""
+        if start.kind != "activity" or end.kind != "activity" or start.side != rt.SIDE_RIGHT:
+            return None
+        src, dst = self.boxes.get(start.owner), self.boxes.get(end.owner)
+        if src is None or dst is None or dst[0] + dst[2] / 2 >= src[0] + src[2] / 2:
+            return None
+        return rt.feedback_price(src, over=end.side == rt.SIDE_TOP)
 
     def plan_branch(self, trunks, end: _Anchor, reverse: bool = False):
         """Where to fork a branch off one of ``trunks`` (segments of one flow) and how to route
@@ -1768,9 +1954,11 @@ class _Layout:
         def level_with(point):
             if end.point is not None:
                 return []
-            return [(rt.point_on(end.rect, end.side, c), 0.0) for c, price in
+            want = round(point[axis], 3)
+            return [(rt.point_on(end.rect, end.side, c), price) for c, price in
                     rt.attach_options(end.rect, end.side, taken, [point[axis]],
-                                      corner=end.corner) if price == 0.0]
+                                      corner=end.corner, centre=end.centre, avoid=end.avoid)
+                    if round(c, 3) == want]
 
         tries = []
         pieces = [(trunk, k, p, q) for trunk in trunks
@@ -1800,7 +1988,7 @@ class _Layout:
                 break  # nothing after this can be cheaper than what was found
             pts = rt.route(fork, way, e, arrive, boxes, self.frame, lines, labels=names,
                            costs=costs)
-            cost = rt.route_cost(pts, costs=costs) + price
+            cost = rt.route_cost(pts, costs=costs) + price +                 rt.THROUGH_BOX * rt.through_boxes(pts, boxes)
             if best is None or cost < best[0]:
                 best = (cost, trunk, fork, k, pts[::-1] if reverse else pts)
         if best is None:
@@ -1836,7 +2024,14 @@ class _Layout:
             return 0.0
         axis = 1 if anchor.side in (rt.SIDE_LEFT, rt.SIDE_RIGHT) else 0
         gap = min((abs(point[axis] - t) for t in self.taken(anchor, exclude)), default=1e9)
-        return 0.0 if gap >= 12.0 else 10.0 + rt.CROWDED * (12.0 - gap)
+        price = 0.0 if gap >= 12.0 else 10.0 + rt.CROWDED * (12.0 - gap)
+        if anchor.centre:  # off the middle, or on the number, as attach_options prices it
+            a0, length = anchor.rect[axis], anchor.rect[axis + 2]
+            if length > 0:
+                price += anchor.centre * ((point[axis] - a0 - length / 2) / (length / 2)) ** 2
+            if any(f <= point[axis] <= t for f, t in anchor.avoid):
+                price += rt.OUT_OF_PLACE
+        return price
 
 
 def _font_size_of(style) -> float:

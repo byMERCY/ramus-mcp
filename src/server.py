@@ -27,6 +27,7 @@ from mcp.server.fastmcp import FastMCP, Image  # noqa: E402
 from mcp.types import ToolAnnotations  # noqa: E402
 
 import idef0_rules as rules  # noqa: E402
+import layout_quality as layout  # noqa: E402
 from model_editor import EditError, ModelEditor  # noqa: E402
 from ramus_rsf import Activity, Arrow, Diagram, End, RsfModel  # noqa: E402
 from render_png import render_diagram_png  # noqa: E402
@@ -52,8 +53,9 @@ by nouns ("заявка"), in the user's language. An arrow on a decomposed box 
 frame of its sheet: draw it there from (or to) the frame and the two are joined.
 
 Every edit answers with "idef0": the rule findings it brought in and how many it settled; \
-check_model lists them all, each with the call that mends it. tidy_sheet straightens a tangled \
-sheet. Nothing is written until save_model (create_model writes its new file at once); saving \
+check_model lists them all, each with the call that mends it. check_layout says how well a \
+sheet is drawn (crossings, detours, arrow ends in corners, feedback the wrong way round, names \
+astray) and tidy_sheet straightens a tangled one, keeping only what reads better. Nothing is written until save_model (create_model writes its new file at once); saving \
 over the opened file first copies it to <name>.backup.rsf. Ask the user to close the model in \
 Ramus before writing over it.
 """
@@ -516,6 +518,25 @@ def check_model(sheet: Optional[str] = None) -> Dict[str, Any]:
     return result
 
 
+@mcp.tool(title="Check how a sheet is drawn", annotations=_LOOK)
+def check_layout(sheet: str) -> Dict[str, Any]:
+    """How well a sheet is drawn - ``sheet`` is the number of the activity it decomposes
+    ("A0"; "A-0" for the context diagram) or its id. Where check_model says whether the model
+    is right, this says whether the sheet reads well: arrows crossing or running on top of one
+    another, routes going a long way round, arrow ends pushed into a box's corner or onto its
+    number, ends crowded on one side, feedback drawn against the convention (into a control
+    over the top, into an input or a mechanism under the bottom), names far from their arrows
+    or lying on boxes, lines and other names, routes through boxes, boxes on top of each other.
+
+    Returns a score - penalty points, lower is better; it compares two layouts of one sheet,
+    not one sheet with another - the faults counted by kind, and the worst of them, each with
+    the segments and boxes it concerns and the tool that mends it (tidy_sheet, tidy_labels,
+    move_activity).
+    """
+    _require()
+    return _Open.editor.layout_report(_sheet_id(sheet))
+
+
 # ------------------------------------------------------------------------------- the hands
 #
 # Every change is made in memory; the reading tools show it straight away, and nothing is
@@ -638,10 +659,14 @@ def tidy_sheet(sheet: str) -> Dict[str, Any]:
     """Lay out a sheet's arrows again - ``sheet`` is the number of the activity it decomposes
     ("A0"; "A-0" for the context diagram) or its id. Each arrow is rerouted with the others
     where they are, its ends free to slide along their sides, and the new route is kept only
-    if it is clearly better (fewer crossings, bends, lines on top of each other); pairs of
-    arrows that cross are tried the other way round. Then names in the way of something are
-    put back beside their arrows. Boxes stay where they are. Use it after a run of edits, or
-    on a sheet drawn by hand that looks tangled; render_diagram shows the result.
+    if the sheet reads better for it (the measure check_layout reports); the ends on each side
+    of a box are spread out evenly, in the order that keeps them from crossing; pairs of arrows
+    that cross are tried the other way round; feedback goes over the top into a control and
+    under the bottom into an input or mechanism. Then names in the way of something are put
+    back beside their arrows. If the sheet does not come out better as a whole it is left as
+    it was. Boxes stay where they are. Answers with the score before and after (``layout``).
+    Use it after a run of edits, or on a sheet drawn by hand that looks tangled;
+    render_diagram shows the result.
     """
     _require()
     return _edited(_Open.editor.tidy_sheet(_sheet_id(sheet)))

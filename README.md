@@ -108,7 +108,7 @@ A sheet is named by the activity it decomposes — `"A-0"` is the context diagra
 decomposition, then `"A1"`, `"A12"`… — and an activity by its number or id.
 
 <details>
-<summary><b>21 tools</b> — click to open</summary>
+<summary><b>22 tools</b> — click to open</summary>
 
 | Tool | What it does |
 |---|---|
@@ -119,13 +119,14 @@ decomposition, then `"A1"`, `"A12"`… — and an activity by its number or id.
 | `get_diagram(node, include_routes?)` | One sheet as data: boxes, flows with their ICOM roles, tunnels, ids for editing |
 | `render_diagram(node)` · `render_diagram_svg_text(node)` | One sheet as a PNG, or as SVG |
 | `check_model(sheet?)` | IDEF0 findings — errors and warnings — each with the call that fixes it |
+| `check_layout(sheet)` | How well a sheet is drawn: crossings, detours, arrow ends in corners, feedback the wrong way round, names astray — a score and the faults behind it |
 | `rename_activity` · `rename_flow` | Rename a box; rename what an arrow carries, on every level |
 | `add_activity(parent, name, …)` | Add a box; it takes the next number and is placed down the IDEF0 diagonal |
 | `add_arrow(sheet, source, target, name?)` | Draw an arrow: box → box, frame → box, box → frame, a fork off an arrow or a join into one; joined to the same arrow on the other level when it is there |
 | `move_activity(activity, …)` | Move or resize a box; its arrows follow |
 | `delete_activity` · `delete_arrow` | Delete a box with its arrows; delete an arrow segment — as Ramus does |
 | `join_levels(first, second)` | Tie an arrow to its continuation on the level below |
-| `tidy_sheet(sheet)` · `tidy_labels(sheet)` | Lay a sheet's arrows out again; move only the names in the way |
+| `tidy_sheet(sheet)` · `tidy_labels(sheet)` | Lay a sheet's arrows out again, keeping only what reads better; move only the names in the way |
 | `save_model(path?)` | Write the changes — over the file (with a backup) or to a copy |
 
 </details>
