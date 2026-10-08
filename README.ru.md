@@ -155,7 +155,7 @@ Python. `RAMUS_MODELS_DIR` (необязательно) — где `list_models`
 ## Разработка
 
 ```bash
-python -m unittest discover -s tests     # ~250 тестов, несколько секунд
+python -m unittest discover -s tests     # ~300 тестов, секунд 20
 python tools/build_mcpb.py               # расширение Claude Desktop, в dist/
 python tools/make_demo.py                # картинки этого README
 ```

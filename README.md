@@ -155,7 +155,7 @@ decomposition, then `"A1"`, `"A12"`… — and an activity by its number or id.
 ## Development
 
 ```bash
-python -m unittest discover -s tests     # ~250 tests, a few seconds
+python -m unittest discover -s tests     # ~300 tests, about 20 seconds
 python tools/build_mcpb.py               # the Claude Desktop extension, into dist/
 python tools/make_demo.py                # the pictures in this README
 ```
