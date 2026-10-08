@@ -200,6 +200,21 @@ class Editing(unittest.TestCase):
         result = server.save_model()
         self.assertTrue(os.path.isfile(result["backup"]))
 
+    def test_once_saved_nothing_is_unsaved_and_later_changes_are_saved_too(self):
+        server.rename_activity("A1", "Подготовить всё")
+        server.save_model()
+        self.assertFalse(server.current_model()["unsaved_changes"])
+        server.rename_activity("A2", "Проверить всё")
+        self.assertTrue(server.current_model()["unsaved_changes"])
+        server.save_model()
+        from ramus_rsf import RsfModel
+        names = [a.name for a in {d.node: d for d in RsfModel(self.path).diagrams()}["A0"].activities]
+        self.assertEqual(names, ["Подготовить всё", "Проверить всё"])
+        second = os.path.join(self._dir.name, "second.rsf")
+        fx.tiny_model(second)
+        server.open_model(second)  # nothing unsaved, so no discard_unsaved needed
+        self.assertEqual(server.current_model()["path"], second)
+
     def test_switching_models_never_drops_or_writes_changes_silently(self):
         server.rename_activity("A2", "Другое")
         with self.assertRaisesRegex(ValueError, "unsaved changes"):
@@ -313,6 +328,10 @@ class Editing(unittest.TestCase):
             self.assertTrue(server.current_model()["path"].endswith("первая.rsf"))
             made = server.create_model("вторая", "Сделать дело")
             self.assertEqual(made["created"], os.path.join(os.path.abspath(folder), "вторая.rsf"))
+            server.add_activity("A0", "Начать дело")
+            saved = server.save_model("третья")  # "save as" is taken from the folder too
+            self.assertEqual(saved["saved"], os.path.join(os.path.abspath(folder), "третья.rsf"))
+            self.assertEqual(server.current_model()["path"], saved["saved"])
         finally:
             if old is None:
                 del os.environ["RAMUS_MODELS_DIR"]

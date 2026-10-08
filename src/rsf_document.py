@@ -495,7 +495,8 @@ class RsfDocument:
     def save(self, path: str, overwrite: bool = False) -> str:
         """Write the file to ``path``. Refuses to replace an existing file unless told to, and
         never leaves a half-written one: it goes to a temporary file next to the target first
-        and is moved into place only once complete."""
+        and is moved into place only once complete. Written over its own file, the document
+        has nothing unsaved any more; written elsewhere, its changes are still unsaved here."""
         path = os.path.abspath(path)
         if os.path.exists(path) and not overwrite:
             raise FileExistsError(f"{path} already exists; pass overwrite to replace it")
@@ -509,4 +510,19 @@ class RsfDocument:
             if os.path.exists(tmp):
                 os.remove(tmp)
             raise
+        if isinstance(self.path, (str, os.PathLike)) and path == os.path.abspath(self.path):
+            self._settle()  # not a document made in memory (blank_model)
         return path
+
+    def _settle(self) -> None:
+        """Take what was just written as the file's content: changed tables become as read."""
+        for name, t in self._tables.items():
+            if t.dirty:
+                t._raw = t.to_bytes()
+                t.dirty = False
+                self._members["data/" + name + ".xml"] = t._raw
+                self._parsed.pop(name, None)
+        if self._sequences_dirty and SEQUENCES in self._members:
+            self._members[SEQUENCES] = self._sequences_text.encode("utf-8")
+            self._sequences_dirty = False
+        self._dropped = False

@@ -135,6 +135,22 @@ class Ids(unittest.TestCase):
         with zipfile.ZipFile(out) as z:
             self.assertNotIn(name, z.namelist())
 
+    def test_saved_over_its_own_file_it_has_nothing_unsaved_and_reads_as_written(self):
+        doc = RsfDocument(self.path)
+        before = len(doc.reader_rows("elements"))  # read (and kept) as the file had it
+        doc.add_row("elements", {"ELEMENT_ID": 999, "QUALIFIER_ID": fx.Q_MODEL})
+        doc.new_crosspoint()
+        doc.save(self.path, overwrite=True)
+        self.assertFalse(doc.changed)
+        self.assertEqual(len(doc.reader_rows("elements")), before + 1)
+        with zipfile.ZipFile(self.path) as z:
+            self.assertEqual(doc.member_bytes("data/elements.xml"), z.read("data/elements.xml"))
+        doc.add_row("elements", {"ELEMENT_ID": 1000, "QUALIFIER_ID": fx.Q_MODEL})
+        self.assertTrue(doc.changed)
+        doc.save(self.path, overwrite=True)
+        ids = {r["ELEMENT_ID"] for r in RsfDocument(self.path).table("elements").rows}
+        self.assertTrue({"999", "1000"} <= ids)
+
     def test_saving_never_replaces_a_file_by_accident(self):
         doc = RsfDocument(self.path)
         with self.assertRaises(FileExistsError):

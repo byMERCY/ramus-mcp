@@ -840,15 +840,18 @@ def save_model(path: Optional[str] = None, overwrite: bool = False) -> Dict[str,
 
     With ``path``: write a new file there (an existing file is replaced only with overwrite) -
     the safe way to try changes, leaving the original untouched; work continues on the new
-    file. Without it: write over the file that was opened, after copying the original once to
-    <name>.backup.rsf beside it. Close the model in Ramus first if it is open there.
+    file. A relative path starts from the models folder. Without it: write over the file that
+    was opened, after copying the original once to <name>.backup.rsf beside it. Close the
+    model in Ramus first if it is open there.
     """
     _require()
+    if path is not None:
+        path = _model_path(path, must_exist=False)
     try:
         result = _Open.editor.save(path, overwrite=overwrite)
     except FileExistsError as exc:
         raise ValueError(str(exc)) from None
-    if path is not None and os.path.abspath(path) != _Open.editor.path:
+    if path is not None and path != _Open.editor.path:
         # Carry on with the copy, as "save as" does everywhere.
         _Open.editor = ModelEditor(result["saved"])
         _Open.path = result["saved"]
