@@ -51,7 +51,16 @@ Build the IDEF0 way: the context diagram holds one box, A0, with its inputs (lef
 connect them (add_arrow: an output into another box's input, control or mechanism), and go a \
 level down where there is more to say. Name activities by verbs ("Проверить заявку") and arrows \
 by nouns ("заявка"), in the user's language. An arrow on a decomposed box continues on the \
-frame of its sheet: draw it there from (or to) the frame and the two are joined.
+frame of its sheet: draw it there from (or to) the frame and the two are joined. State the \
+model's purpose and viewpoint on A-0 with set_purpose, as IDEF0 asks.
+
+A data flow diagram is a model made with create_model(notation="dfd" or "dfds"): on its \
+sheets add_activity(kind="external", "store" or "role") adds external entities, data stores \
+and, on DFDS, roles beside the processes, and a flow may meet a box on any side.
+
+For a report: export_diagram writes sheets to PNG or SVG files in the IDEF0 diagram form \
+(render_diagram(form=true) shows it); style_activity and style_arrow give boxes and arrows \
+colours, line styles and fonts; add_text writes a note or a legend on a sheet.
 
 Every edit answers with "idef0": the rule findings it brought in and how many it settled; \
 check_model lists them all, each with the call that mends it. check_layout says how well a \
