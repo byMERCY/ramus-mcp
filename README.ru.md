@@ -6,6 +6,7 @@
 
 **Глаза и руки Клода для моделей IDEF0 в Ramus**
 
+[![release](https://img.shields.io/github/v/release/byMERCY/ramus-mcp)](https://github.com/byMERCY/ramus-mcp/releases/latest)
 [![tests](https://github.com/byMERCY/ramus-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/byMERCY/ramus-mcp/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![MCP server](https://img.shields.io/badge/MCP-server-1f4e79)](https://modelcontextprotocol.io)
@@ -54,6 +55,10 @@ ramus-mcp даёт Клоду — или любому MCP-клиенту — р�
     <td align="center"><sub>Диаграмма потоков данных (DFD): процессы, внешние сущности, хранилища</sub></td>
   </tr>
 </table>
+
+**Новое в 1.1:** диаграммы потоков данных (DFD и DFDS), бланк IDEF0 и экспорт листов для отчёта,
+цвета и стили линий, заметки и цель модели на A-0, `check_layout` и `layout_sheet`. Все изменения —
+в [списке изменений](CHANGELOG.ru.md).
 
 ## Установка в Claude Desktop
 
@@ -130,7 +135,7 @@ Python. `RAMUS_MODELS_DIR` (необязательно) — где `list_models`
 | `check_model(sheet?)` | Замечания по IDEF0 — ошибки и предупреждения — с вызовом-исправлением к каждому |
 | `check_layout(sheet)` | Насколько хорошо нарисован лист: пересечения, обходы, концы стрелок в углах, обратные связи не с той стороны, потерянные подписи — оценка и что за ней |
 | `rename_activity` · `rename_flow` | Переименовать блок; переименовать то, что несёт стрелка, на всех уровнях |
-| `add_activity(parent, name, …)` | Добавить блок: он получает следующий номер и встаёт по диагонали IDEF0 — пока стрелки не касаются блоков, все они заново расставляются по размеру листа |
+| `add_activity(parent, name, kind?, …)` | Добавить блок: он получает следующий номер и встаёт по диагонали IDEF0 — пока стрелки не касаются блоков, все они заново расставляются по размеру листа. На диаграмме потоков данных `kind` добавляет внешнюю сущность, хранилище или роль |
 | `add_arrow(sheet, source, target, name?, style?)` | Нарисовать стрелку: блок → блок, рамка → блок, блок → рамка, развилка от стрелки или слияние в неё; связывается с той же стрелкой на другом уровне, если она там есть |
 | `style_activity(activity, fill?, color?, font_size?, bold?, block_type?)` | Вид блока: цвет заливки и контура (по имени, `#rrggbb` или `r,g,b`), шрифт, тип блока |
 | `style_arrow(segment, color?, width?, line?, font_size?, bold?)` | Вид стрелки: цвет, толщина, сплошная / пунктир / точки / штрихпунктир, шрифт подписи; вся стрелка с ветками |

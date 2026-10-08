@@ -13,6 +13,7 @@ dist/
 docs/
 .github/
 README.ru.md
+CHANGELOG*.md
 *.rsf
 requirements.txt
 .gitignore

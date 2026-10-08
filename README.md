@@ -6,6 +6,7 @@
 
 **Claude's eyes and hands for Ramus IDEF0 models**
 
+[![release](https://img.shields.io/github/v/release/byMERCY/ramus-mcp)](https://github.com/byMERCY/ramus-mcp/releases/latest)
 [![tests](https://github.com/byMERCY/ramus-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/byMERCY/ramus-mcp/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![MCP server](https://img.shields.io/badge/MCP-server-1f4e79)](https://modelcontextprotocol.io)
@@ -54,6 +55,10 @@ that Ramus opens.
     <td align="center"><sub>A data flow diagram (DFD): processes, external entities, data stores</sub></td>
   </tr>
 </table>
+
+**New in 1.1:** data flow diagrams (DFD and DFDS), the IDEF0 diagram form and export for a
+report, colours and line styles, notes and the model's purpose on A-0, `check_layout` and
+`layout_sheet`. Everything that changed: [CHANGELOG](CHANGELOG.md).
 
 ## Install in Claude Desktop
 
@@ -130,7 +135,7 @@ decomposition, then `"A1"`, `"A12"`… — and an activity by its number or id.
 | `check_model(sheet?)` | IDEF0 findings — errors and warnings — each with the call that fixes it |
 | `check_layout(sheet)` | How well a sheet is drawn: crossings, detours, arrow ends in corners, feedback the wrong way round, names astray — a score and the faults behind it |
 | `rename_activity` · `rename_flow` | Rename a box; rename what an arrow carries, on every level |
-| `add_activity(parent, name, …)` | Add a box; it takes the next number and is placed down the IDEF0 diagonal — while no arrow touches the boxes, all of them are spread again to fit the page |
+| `add_activity(parent, name, kind?, …)` | Add a box; it takes the next number and is placed down the IDEF0 diagonal — while no arrow touches the boxes, all of them are spread again to fit the page. On a data flow diagram `kind` adds an external entity, a data store or a role |
 | `add_arrow(sheet, source, target, name?, style?)` | Draw an arrow: box → box, frame → box, box → frame, a fork off an arrow or a join into one; joined to the same arrow on the other level when it is there |
 | `style_activity(activity, fill?, color?, font_size?, bold?, block_type?)` | A box's look: fill and outline colour (by name, `#rrggbb` or `r,g,b`), font, block type |
 | `style_arrow(segment, color?, width?, line?, font_size?, bold?)` | An arrow's look: colour, width, solid / dashed / dotted / dash-dot, its name's font; the whole arrow with its branches |
