@@ -140,6 +140,11 @@ class Texts(unittest.TestCase):
         texts = [t.text for t in self.sheet("A-0").texts]
         self.assertEqual(texts, ["Цель: Описать олимпиаду\nТочка зрения: Жюри"])
 
+    def test_a_purpose_given_with_its_word_is_not_labelled_twice(self):
+        self.ed.set_purpose("Цель: описать олимпиаду", "точка зрения: жюри")
+        texts = [t.text for t in self.sheet("A-0").texts]
+        self.assertEqual(texts, ["Цель: описать олимпиаду\nТочка зрения: жюри"])
+
     def test_bends_are_drawn_rounded(self):
         from scene import _rounded
         pts = _rounded([(0.0, 0.0), (100.0, 0.0), (100.0, 50.0)])

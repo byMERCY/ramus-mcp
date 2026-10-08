@@ -1085,7 +1085,8 @@ class ModelEditor:
     def set_purpose(self, purpose: str, viewpoint: Optional[str] = None) -> Dict[str, object]:
         """State the model's purpose and viewpoint on its context diagram, as IDEF0 asks of
         every A-0: one text, replaced each time, in the model's language."""
-        purpose = _clean_name(purpose, "purpose")
+        purpose = _clean_name(_unlabelled(purpose, ("Цель:", "Purpose:")), "purpose")
+        viewpoint = _unlabelled(viewpoint or "", ("Точка зрения:", "Viewpoint:"))
         context = next((d for d in self.snapshot().diagrams() if d.node == "A-0"), None)
         if context is None:
             raise EditError("This model has no context diagram to write its purpose on.")
@@ -3174,6 +3175,16 @@ def _clean_name(name: str, what: str) -> str:
     if name is None or not str(name).strip():
         raise EditError(f"A {what} needs a name; got an empty one.")
     return str(name).strip()
+
+
+def _unlabelled(text: Optional[str], labels: Tuple[str, ...]) -> str:
+    """``text`` without a leading label the caller already wrote ("Цель: ..."), so that the
+    one put in front of it is not doubled."""
+    text = str(text or "").strip()
+    for label in labels:
+        if text.lower().startswith(label.lower()):
+            return text[len(label):].strip()
+    return text
 
 
 def _backup_path(path: str) -> str:
