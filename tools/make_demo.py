@@ -250,7 +250,7 @@ def main() -> None:
                       for i, (caption, png) in enumerate(shots)]
             frames[0].save(os.path.join(folder, "build.gif"), save_all=True,
                            append_images=frames[1:], loop=0, optimize=True,
-                           duration=[1200] * (len(frames) - 1) + [4500])
+                           duration=[900] * (len(frames) - 1) + [3500])
             model = ModelEditor(path).snapshot()
             for node, name in (("A-0", "context.png"), ("A0", "decomposition.png")):
                 with open(os.path.join(folder, name), "wb") as fh:
