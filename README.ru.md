@@ -1,5 +1,8 @@
 <div align="center">
 
+[![English](https://img.shields.io/badge/README-English-1f4e79?style=for-the-badge)](README.md)
+[![Русский](https://img.shields.io/badge/README-%D0%A0%D1%83%D1%81%D1%81%D0%BA%D0%B8%D0%B9-d97757?style=for-the-badge)](README.ru.md)
+
 <img src="icon.png" width="96" alt="">
 
 # ramus-mcp
@@ -12,8 +15,6 @@
 [![MCP server](https://img.shields.io/badge/MCP-server-1f4e79)](https://modelcontextprotocol.io)
 [![Claude Desktop extension](https://img.shields.io/badge/Claude%20Desktop-extension-d97757)](#установка-в-claude-desktop)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-3776ab)](pyproject.toml)
-
-[English](README.md) · **Русский**
 
 </div>
 
