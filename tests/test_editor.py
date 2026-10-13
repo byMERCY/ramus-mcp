@@ -478,7 +478,6 @@ class Arrows(unittest.TestCase):
              {"activity": fx.C2, "role": "input"}, "x"),                          # leaves by an input
             (fx.TOP, {"activity": fx.C1}, {"activity": fx.C2}, "x"),              # no role at target
             (fx.TOP, {"activity": fx.G1}, {"activity": fx.C2, "role": "input"}, "x"),  # not on sheet
-            (fx.TOP, {"activity": fx.C1}, {"activity": fx.C1, "role": "input"}, "x"),  # into itself
             (fx.TOP, {"activity": fx.C1}, {"activity": fx.C2, "role": "input"}, None),  # no name
             (fx.C2, {"activity": fx.C2}, {"frame": "output"}, "x"),               # C2 has no sheet
         ]
@@ -792,6 +791,62 @@ class Joining(_OnTiny):
         sheet = next(d for d in RsfModel(out).diagrams() if d.parent_id == fx.TOP)
         self.assertTrue({34, r["sector"], r["join"]["continuation"]} <=
                         {a.sector_id for a in sheet.arrows})
+
+
+class Looping(_OnTiny):
+    """An output fed straight back into the box it leaves: the way an iteration is drawn."""
+
+    def _loop(self, role="control", name="следующий шаг"):
+        return self.editor.add_arrow(fx.TOP, {"activity": fx.C2},
+                                     {"activity": fx.C2, "role": role}, name)
+
+    def _fresh(self):
+        self.tearDown()
+        self.setUp()
+
+    def _box(self):
+        c2 = next(a for a in self._sheet(fx.TOP).activities if a.element_id == fx.C2)
+        return c2.x, c2.y, c2.width, c2.height
+
+    def test_a_loop_leaves_the_right_side_and_comes_back_into_the_role_asked(self):
+        for role, side in (("control", "top"), ("input", "left"), ("mechanism", "bottom")):
+            with self.subTest(role=role):
+                self._fresh()
+                r = self._loop(role)
+                arrow = self._arrows()[r["sector"]]
+                self.assertEqual((arrow.start.activity_id, arrow.start.side), (fx.C2, "right"))
+                self.assertEqual((arrow.end.activity_id, arrow.end.side), (fx.C2, side))
+                self.assertEqual(arrow.name, "следующий шаг")
+
+    def test_a_loop_is_routed_round_the_box_not_through_it(self):
+        for role in ("control", "input", "mechanism"):
+            with self.subTest(role=role):
+                self._fresh()
+                x, y, w, h = self._box()
+                sector = self._loop(role)["sector"]
+                pts = self._arrows()[sector].points
+                for p, q in _pieces(pts):
+                    self.assertTrue(p[0] == q[0] or p[1] == q[1])
+                    self.assertFalse(_touches(_seg_rect(p, q), (x + 1, y + 1, w - 2, h - 2)),
+                                     (p, q))
+
+    def test_a_loop_into_a_control_goes_over_the_top_into_an_input_under_the_bottom(self):
+        x, y, w, h = self._box()
+        sector = self._loop("control")["sector"]
+        over = self._arrows()[sector].points
+        self.assertLess(min(p[1] for p in over), y)
+        self._fresh()
+        sector = self._loop("input")["sector"]
+        under = self._arrows()[sector].points
+        self.assertGreater(max(p[1] for p in under), y + h)
+
+    def test_the_looped_model_saves_and_reads_back(self):
+        r = self._loop()
+        out = os.path.join(self._dir.name, "looped.rsf")
+        self.editor.save(out)
+        sheet = next(d for d in RsfModel(out).diagrams() if d.parent_id == fx.TOP)
+        arrow = next(a for a in sheet.arrows if a.sector_id == r["sector"])
+        self.assertEqual((arrow.start.activity_id, arrow.end.activity_id), (fx.C2, fx.C2))
 
 
 class Tidying(_OnTiny):

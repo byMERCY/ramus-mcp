@@ -657,10 +657,9 @@ class ModelEditor:
             raise EditError("That arrow would touch no box: from the frame straight back to the "
                             "frame, or from one arrow straight into another. One end has to be "
                             "on an activity, or on the frame with the other on an arrow.")
-        if src.activity is not None and dst.activity is not None \
-                and src.activity.element_id == dst.activity.element_id:
-            raise EditError("An arrow from a box back into the same box is not drawn this way in "
-                            "IDEF0; feed the output to another activity.")
+        # An output fed straight back into the box it leaves is a loop - the way an iteration
+        # ("take the next element") is drawn. It is routed as feedback: over the top into a
+        # control, under the bottom into an input or a mechanism.
         far = dst if trunk is not None else src
         if other is not None and far.kind == "activity" and any(
                 e.kind == "activity" and e.activity_id == far.activity.element_id
@@ -2913,14 +2912,16 @@ class _Layout:
         return pts, cost
 
     def feedback(self, start: _Anchor, end: _Anchor):
-        """The router's ``extra`` for an output fed back into a box further left - priced to
-        go over the top into a control, under the bottom into an input or mechanism - or None
-        for any other arrow."""
+        """The router's ``extra`` for an output fed back into a box further left, or into the
+        box it leaves (a loop) - priced to go over the top into a control, under the bottom
+        into an input or mechanism - or None for any other arrow."""
         if start.kind != "activity" or end.kind != "activity" or start.side != rt.SIDE_RIGHT \
                 or self.notation != "idef0":
             return None
         src, dst = self.boxes.get(start.owner), self.boxes.get(end.owner)
-        if src is None or dst is None or dst[0] + dst[2] / 2 >= src[0] + src[2] / 2:
+        if src is None or dst is None:
+            return None
+        if start.owner != end.owner and dst[0] + dst[2] / 2 >= src[0] + src[2] / 2:
             return None
         return rt.feedback_price(src, over=end.side == rt.SIDE_TOP)
 

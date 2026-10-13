@@ -676,6 +676,11 @@ def add_arrow(sheet: str, source: Dict[str, Any], target: Dict[str, Any],
     carries the flow of the arrow it forks from or joins and shows no name of its own, unless
     it is given a name of its own (then it is a new flow - a part of what that arrow carries).
 
+    A box's output may go back into the same box - {"activity": "A1"} to {"activity": "A1",
+    "role": "control"} - the loop an iteration is drawn with ("take the next element"); it is
+    routed as feedback, over the top into a control, under the bottom into an input or a
+    mechanism.
+
     An end on the frame, or on a box that has its own decomposition, is joined to the same
     flow on the other level when that arrow is there and not yet continued (matched by flow,
     or by name) - that keeps the levels balanced. Otherwise it is left as a tunnel. The route
