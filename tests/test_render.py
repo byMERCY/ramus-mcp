@@ -1,8 +1,11 @@
 import io
 import os
+import shutil
+import sys
 import tempfile
 import unittest
 import xml.dom.minidom
+from unittest import mock
 
 import _paths  # noqa: F401  (puts src/ on the path)
 import rsf_builder as fx
@@ -35,6 +38,32 @@ class Wrapping(unittest.TestCase):
 
     def test_one_long_word_with_no_break_is_left_whole(self):
         self.assertEqual(sc.wrap("непрерывность", 5, 12), ["непрерывность"])
+
+
+@unittest.skipIf(sc.font_path() is None, "no TrueType face on this machine to copy")
+class Fonts(unittest.TestCase):
+    """A Mac keeps Arial as "Arial.ttf", and Pillow matches a face's file name exactly there:
+    looked for as "arial.ttf" it is not found, and Cyrillic names come out as boxes."""
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        fonts = os.path.join(self._dir.name, "Library", "Fonts")
+        os.makedirs(fonts)
+        for name in ("Arial.ttf", "Arial Bold.ttf"):
+            shutil.copy(sc.font_path(), os.path.join(fonts, name))
+
+    def tearDown(self):
+        self._dir.cleanup()
+        sc.font_path.cache_clear()
+        sc.bold_font_path.cache_clear()
+
+    def test_a_mac_finds_arial_by_its_own_file_name(self):
+        home = {"HOME": self._dir.name, "USERPROFILE": self._dir.name}
+        with mock.patch.object(sys, "platform", "darwin"), mock.patch.dict(os.environ, home):
+            sc.font_path.cache_clear()
+            sc.bold_font_path.cache_clear()
+            self.assertEqual(os.path.basename(sc.font_path() or ""), "Arial.ttf")
+            self.assertEqual(os.path.basename(sc.bold_font_path() or ""), "Arial Bold.ttf")
 
 
 class Geometry(unittest.TestCase):

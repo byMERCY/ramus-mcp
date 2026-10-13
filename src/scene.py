@@ -230,12 +230,17 @@ class Scene:
 
 # ---------------------------------------------------------------------------- measuring text
 
-_FONT_NAMES = ("segoeui.ttf", "arial.ttf", "DejaVuSans.ttf", "LiberationSans-Regular.ttf")
+# Faces that can draw Cyrillic, by file name as each system keeps them: Windows, then macOS
+# (where Pillow matches the name exactly - "arial.ttf" is not found there), then Linux. Without
+# one, Pillow's own face draws Latin only and Cyrillic names come out as boxes.
+_FONT_NAMES = ("segoeui.ttf", "arial.ttf", "Arial.ttf", "DejaVuSans.ttf",
+               "LiberationSans-Regular.ttf", "NotoSans-Regular.ttf", "FreeSans.ttf",
+               "Arial Unicode.ttf")
 _REFERENCE_SIZE = 100  # measure big, scale down: small sizes round badly
 
 
-_BOLD_NAMES = ("segoeuib.ttf", "arialbd.ttf", "DejaVuSans-Bold.ttf",
-               "LiberationSans-Bold.ttf")
+_BOLD_NAMES = ("segoeuib.ttf", "arialbd.ttf", "Arial Bold.ttf", "DejaVuSans-Bold.ttf",
+               "LiberationSans-Bold.ttf", "NotoSans-Bold.ttf", "FreeSansBold.ttf")
 
 
 @lru_cache(maxsize=1)
