@@ -38,8 +38,9 @@ INSTRUCTIONS = """\
 Ramus business-process models (.rsf files, IDEF0): read them, see them, check them against the \
 rules of IDEF0, change them, or build one from nothing. One model is open at a time.
 
-Start: list_models finds the .rsf files (in the models folder, or a folder you name); \
-open_model opens one; create_model starts a new one.
+Start: list_models finds the .rsf files (in the models folder and the user's Desktop, \
+Documents and Downloads, or a folder you name); open_model opens one by its path or just its \
+name; create_model starts a new one.
 
 Look before and after a change: render_diagram shows a sheet as a picture; get_diagram gives \
 its boxes and arrows as data, with the ids the editing tools take; get_function_tree the whole \
@@ -155,6 +156,113 @@ def _models_dir() -> Optional[str]:
     if not folder or "${" in folder:  # unset, or a placeholder the client left unexpanded
         return None
     return os.path.abspath(os.path.expanduser(os.path.expandvars(folder)))
+
+
+# Windows' own ids for the Desktop, Documents and Downloads (they may have been moved: to
+# OneDrive, to another drive, or named in the user's language).
+_WINDOWS_FOLDERS = ("B4BFCC3A-DB2C-424C-B029-7FE99A87C641", "FDD39AD0-238F-46AF-ADB4-6C85480369C7",
+                    "374DE290-123F-4565-9164-39C4925E467B")
+
+
+def _windows_folder(guid: str) -> Optional[str]:
+    try:
+        import ctypes
+        import uuid
+
+        class _Guid(ctypes.Structure):
+            _fields_ = [("d1", ctypes.c_uint32), ("d2", ctypes.c_uint16), ("d3", ctypes.c_uint16),
+                        ("d4", ctypes.c_ubyte * 8)]
+
+        u = uuid.UUID(guid)
+        g = _Guid(u.time_low, u.time_mid, u.time_hi_version, (ctypes.c_ubyte * 8)(*u.bytes[8:]))
+        out = ctypes.c_wchar_p()
+        if ctypes.windll.shell32.SHGetKnownFolderPath(ctypes.byref(g), 0, None, ctypes.byref(out)):
+            return None
+        try:
+            return out.value
+        finally:
+            ctypes.windll.ole32.CoTaskMemFree(out)
+    except Exception:  # not Windows, or no such folder: the home folder's names will do
+        return None
+
+
+def _known_folders() -> List[str]:
+    """Where people keep their files: the Desktop, Documents and Downloads, as this system
+    has them."""
+    found: List[str] = []
+    if sys.platform == "win32":
+        found += [p for p in map(_windows_folder, _WINDOWS_FOLDERS) if p]
+    home = os.path.expanduser("~")
+    found += [os.path.join(home, n) for n in ("Desktop", "Documents", "Downloads")]
+    return _distinct(p for p in found if os.path.isdir(p))
+
+
+def _distinct(paths) -> List[str]:
+    seen, out = set(), []
+    for p in paths:
+        p = os.path.abspath(p)
+        if os.path.normcase(p) not in seen:
+            seen.add(os.path.normcase(p))
+            out.append(p)
+    return out
+
+
+def _search_folders() -> List[str]:
+    """Where list_models and open_model look: the models folder, then the known folders."""
+    first = _models_dir()
+    return _distinct(([first] if first and os.path.isdir(first) else []) + _known_folders())
+
+
+_SKIP_DIRS = {"node_modules", "__pycache__", "AppData", "site-packages"}
+
+
+def _models_in(base: str, recursive: bool = True) -> List[tuple]:
+    """(modified, path, size) of the .rsf files in ``base`` and, when ``recursive``, the
+    folders below it, three deep; backups (<name>.backup.rsf) are left out."""
+    found = []
+    for root, dirs, files in os.walk(base):
+        depth = os.path.relpath(root, base).count(os.sep) + (root != base)
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in _SKIP_DIRS] \
+            if recursive and depth < 3 else []
+        for f in files:
+            if f.lower().endswith(".rsf") and ".backup" not in f.lower():
+                p = os.path.join(root, f)
+                try:
+                    st = os.stat(p)
+                except OSError:
+                    continue
+                found.append((st.st_mtime, p, st.st_size))
+    return found
+
+
+def _find_by_name(path: str) -> Optional[str]:
+    """The model a name stands for, wherever models are looked for - the name alone, or the
+    last part of a path that is not on this machine (a client working in a sandbox sees the
+    user's folders under other paths). None if there is none; an error if there are several."""
+    parts = [s for s in str(path).strip().strip('"').replace("\\", "/").split("/") if s]
+    if not parts:
+        return None
+    if not parts[-1].lower().endswith(".rsf"):
+        parts[-1] += ".rsf"
+    name = parts[-1]
+    hits = _distinct(p for base in _search_folders() for _, p, _ in _models_in(base)
+                     if os.path.basename(p).lower() == name.lower())
+    if len(hits) > 1:  # the folders the path names, from the end, tell copies apart
+        def shared(p: str) -> int:
+            mine = [s.lower() for s in p.replace("\\", "/").split("/")]
+            n = 0
+            while n < min(len(mine), len(parts)) and mine[-1 - n] == parts[-1 - n].lower():
+                n += 1
+            return n
+        best = max(map(shared, hits))
+        if best > 1:
+            hits = [p for p in hits if shared(p) == best]
+    if len(hits) > 1:
+        dated = [f"{p} (changed {_dt.datetime.fromtimestamp(os.path.getmtime(p)):%Y-%m-%d %H:%M})"
+                 for p in hits]
+        raise ValueError(f"Two or more models are called {name}: {'; '.join(dated)}. Give "
+                         f"open_model the full path of the one meant.")
+    return hits[0] if hits else None
 
 
 def _model_path(path: str, must_exist: bool) -> str:
@@ -305,8 +413,14 @@ def open_model(path: str, discard_unsaved: bool = False) -> Dict[str, Any]:
     numbers ("A-0" is the context diagram, "A0" the top decomposition), and the largest few, so
     you know what there is to look at. If the model open now has unsaved changes this refuses,
     so nothing is lost or written behind your back: save_model first, or pass discard_unsaved.
+    ``path`` may be a full path, a path from the models folder, or just the model's name
+    ("Заказы"): a name, or a path not on this machine, is looked for where list_models
+    looks.
     """
+    given = path
     path = _model_path(path, must_exist=True)
+    if not os.path.isfile(path):
+        path = _find_by_name(given) or path
     if not os.path.isfile(path):
         raise ValueError(f"{path} is not a file. list_models shows the models there are.")
     if _Open.editor is not None and _Open.editor.changed and not discard_unsaved:
@@ -364,43 +478,34 @@ def create_model(path: str, activity: str, author: str = "", project: Optional[s
                     "decompose it."}
 
 
-_SKIP_DIRS = {"node_modules", "__pycache__", "AppData", "site-packages"}
-
-
 @mcp.tool(title="Find model files", annotations=_LOOK)
 def list_models(folder: Optional[str] = None, recursive: bool = True) -> Dict[str, Any]:
     """Find Ramus model files (.rsf): in ``folder``, or else in the models folder set up for
-    this connector (else the user's Documents), and the folders below it when ``recursive``.
-    Newest first, with size and date; backups (<name>.backup.rsf) are left out. Give a path from
-    here to open_model."""
+    this connector and in the user's Desktop, Documents and Downloads - and the folders below,
+    three deep, when ``recursive``. Newest first, with size and date; backups
+    (<name>.backup.rsf) are left out. Give a path (or just a name) from here to open_model."""
     if folder:
-        base = os.path.abspath(os.path.expanduser(os.path.expandvars(folder.strip().strip('"'))))
+        bases = [os.path.abspath(os.path.expanduser(os.path.expandvars(folder.strip().strip('"'))))]
+        if not os.path.isdir(bases[0]):
+            raise ValueError(f"{bases[0]} is not a folder.")
     else:
-        base = _models_dir() or os.path.join(os.path.expanduser("~"), "Documents")
-    if not os.path.isdir(base):
-        raise ValueError(f"{base} is not a folder.")
-    found = []
-    for root, dirs, files in os.walk(base):
-        depth = os.path.relpath(root, base).count(os.sep) + (root != base)
-        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in _SKIP_DIRS] \
-            if recursive and depth < 3 else []
-        for f in files:
-            if f.lower().endswith(".rsf") and ".backup" not in f.lower():
-                p = os.path.join(root, f)
-                try:
-                    st = os.stat(p)
-                except OSError:
-                    continue
-                found.append((st.st_mtime, p, st.st_size))
-    found.sort(reverse=True)
+        bases = _search_folders() or [os.path.join(os.path.expanduser("~"), "Documents")]
+    seen: Dict[str, tuple] = {}
+    for base in bases:
+        if os.path.isdir(base):
+            for m, p, size in _models_in(base, recursive):
+                seen.setdefault(os.path.normcase(p), (m, p, size))
+    found = sorted(seen.values(), reverse=True)
     shown = found[:200]
     result: Dict[str, Any] = {
-        "folder": base,
+        "folder": bases[0],
         "models": [{"path": p, "name": os.path.splitext(os.path.basename(p))[0],
                     "size_kb": round(size / 1024, 1),
                     "modified": _dt.datetime.fromtimestamp(m).strftime("%Y-%m-%d %H:%M")}
                    for m, p, size in shown],
     }
+    if len(bases) > 1:
+        result["also_searched"] = bases[1:]
     if len(found) > len(shown):
         result["more"] = len(found) - len(shown)
     if not found:

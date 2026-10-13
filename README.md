@@ -65,10 +65,12 @@ report, colours and line styles, notes and the model's purpose on A-0, `check_la
 1. Download `ramus-mcp-<version>.mcpb` from the [latest release](../../releases/latest).
 2. Double-click it — or in Claude Desktop open **Settings → Extensions → Advanced settings →
    Install Extension…** and pick the file.
-3. Choose the folder you keep your models in.
+3. Choose the folder you keep your models in — or leave it: Claude also looks on your Desktop,
+   in Documents and in Downloads.
 
-Claude Desktop sets up Python and the dependencies itself; the first start takes a minute. Then
-just ask:
+That is all it needs: Claude Desktop on Windows or macOS. It sets up Python and the
+dependencies itself (the first start takes a minute); neither Ramus nor Java has to be
+installed. Then just ask:
 
 - *"Which Ramus models do I have?"*
 - *"Open the hiking model and show me diagram A0."*
@@ -112,8 +114,8 @@ A client configured by JSON:
 ```
 
 Without uv: `python -m venv .venv`, `pip install -r requirements.txt`, then run `src/server.py`
-with that Python. `RAMUS_MODELS_DIR` (optional) is where `list_models` looks and relative paths
-start.
+with that Python. `RAMUS_MODELS_DIR` (optional) is where `list_models` looks first — before the
+Desktop, Documents and Downloads — and where relative paths start.
 
 ## Tools
 
@@ -125,8 +127,8 @@ decomposition, then `"A1"`, `"A12"`… — and an activity by its number or id.
 
 | Tool | What it does |
 |---|---|
-| `list_models(folder?)` | The `.rsf` files in the models folder (or another), newest first |
-| `open_model(path)` · `current_model()` | Open a model; say which one is open |
+| `list_models(folder?)` | The `.rsf` files in the models folder, on the Desktop, in Documents and Downloads (or in another folder), newest first |
+| `open_model(path)` · `current_model()` | Open a model — by its path or just its name; say which one is open |
 | `create_model(path, activity, author?, project?, notation?)` | A new model — IDEF0, DFD or DFDS — whose context diagram holds the top activity A0 |
 | `list_diagrams()` · `get_function_tree()` | The sheets; the activity tree with IDEF0 numbers |
 | `get_diagram(node, include_routes?)` | One sheet as data: boxes, flows with their ICOM roles, tunnels, ids for editing |

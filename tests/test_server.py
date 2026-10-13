@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import _paths  # noqa: F401  (puts src/ on the path)
 import rsf_builder as fx
@@ -23,6 +24,22 @@ def _reset():
     server._Open.path = None
     server._Open.diagrams = []
     server._Open.activities = {}
+
+
+_no_home_folders = None
+
+
+def setUpModule():
+    # The tests never look in the Desktop, Documents and Downloads of whoever runs them.
+    global _no_home_folders
+    if server is not None:
+        _no_home_folders = mock.patch.object(server, "_known_folders", return_value=[])
+        _no_home_folders.start()
+
+
+def tearDownModule():
+    if _no_home_folders is not None:
+        _no_home_folders.stop()
 
 
 @unittest.skipIf(server is None, "mcp package not installed")
@@ -151,6 +168,63 @@ class Tools(unittest.TestCase):
         fx.tiny_model(second)
         server.open_model(second)
         self.assertEqual(server.current_model()["path"], second)
+
+
+@unittest.skipIf(server is None, "mcp package not installed")
+class Finding(unittest.TestCase):
+    """Models are found where people keep them - the models folder, and the Desktop, Documents
+    and Downloads - and opened by a name, or by a path from another machine (a client's
+    sandbox) that ends in that name."""
+
+    def setUp(self):
+        _reset()
+        self._dir = tempfile.TemporaryDirectory()
+        self.models = os.path.join(self._dir.name, "models")
+        self.desk = os.path.join(self._dir.name, "desk")
+        self.coursework = os.path.join(self.desk, "учёба", "2 курс", "Моделирование")
+        os.makedirs(self.models)
+        os.makedirs(self.coursework)
+        fx.tiny_model(os.path.join(self.models, "поход.rsf"))
+        self.triangles = os.path.join(self.coursework, "Заказы.rsf")
+        fx.tiny_model(self.triangles)
+        patches = [mock.patch.dict(os.environ, {"RAMUS_MODELS_DIR": self.models}),
+                   mock.patch.object(server, "_known_folders", return_value=[self.desk])]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def tearDown(self):
+        _reset()
+        self._dir.cleanup()
+
+    def test_the_desktop_is_searched_along_with_the_models_folder(self):
+        found = server.list_models()
+        self.assertEqual(found["folder"], os.path.abspath(self.models))
+        self.assertEqual(found["also_searched"], [os.path.abspath(self.desk)])
+        self.assertEqual(sorted(m["name"] for m in found["models"]), ["Заказы", "поход"])
+        self.assertEqual([m["name"] for m in server.list_models(self.models)["models"]], ["поход"])
+
+    def test_a_model_is_opened_by_its_name_alone(self):
+        self.assertEqual(server.open_model("заКАЗЫ")["opened"], self.triangles)
+
+    def test_a_path_from_a_clients_sandbox_is_opened_by_its_file_name(self):
+        opened = server.open_model("/sessions/x/mnt/Моделирование/Заказы.rsf")
+        self.assertEqual(opened["opened"], self.triangles)
+
+    def test_two_models_of_one_name_are_named_back_rather_than_guessed(self):
+        fx.tiny_model(os.path.join(self.desk, "Заказы.rsf"))
+        with self.assertRaisesRegex(ValueError, "Two or more"):
+            server.open_model("Заказы")
+        self.assertIsNone(server.current_model().get("path"))
+
+    def test_the_folders_in_a_sandbox_path_tell_two_copies_apart(self):
+        fx.tiny_model(os.path.join(self.desk, "Заказы.rsf"))  # a downloaded copy
+        opened = server.open_model("/sessions/x/mnt/Моделирование/Заказы.rsf")
+        self.assertEqual(opened["opened"], self.triangles)
+
+    def test_a_name_found_nowhere_is_still_reported(self):
+        with self.assertRaisesRegex(ValueError, "not a file"):
+            server.open_model("нет-такой")
 
 
 @unittest.skipIf(server is None, "mcp package not installed")

@@ -30,14 +30,14 @@
     "models_dir": {
       "type": "directory",
       "title": "Models folder",
-      "description": "Where your Ramus models (.rsf) are. Claude looks for models here, and a model named without a full path is taken from here.",
+      "description": "Where your Ramus models (.rsf) are. Claude looks for models here first (and on your Desktop, in Documents and Downloads), and a new model or a copy named without a full path is saved here.",
       "required": false,
       "default": "${DOCUMENTS}"
     }
   },
   "tools": [
-    {"name": "list_models", "description": "Find the .rsf models in the models folder or another one."},
-    {"name": "open_model", "description": "Open a model to work on."},
+    {"name": "list_models", "description": "Find the .rsf models in the models folder, the Desktop, Documents and Downloads, or another folder."},
+    {"name": "open_model", "description": "Open a model to work on, by its path or just its name."},
     {"name": "create_model", "description": "Create a new model from nothing - IDEF0, DFD or DFDS: a context diagram with its top activity."},
     {"name": "current_model", "description": "Say which model is open and whether it has unsaved changes."},
     {"name": "list_diagrams", "description": "List the model's diagrams."},
