@@ -2,6 +2,25 @@
 
 **English** · [Русский](CHANGELOG.ru.md)
 
+## 1.1.1 — 2026-10-13
+
+### Changed
+
+- **Loops.** `add_arrow` draws a box's output back into the same box (into its control, input
+  or mechanism) — the loop an iteration is drawn with, such as "take the next element". It was
+  refused before. The loop is routed as feedback: over the top into a control, under the bottom
+  into an input or a mechanism.
+- **Finding models.** `list_models` looks on the Desktop, in Documents and in Downloads as well
+  as in the models folder (on Windows, wherever those folders really are — OneDrive or another
+  drive). `open_model` takes just a model's name, or a path from a client working in a sandbox,
+  and finds the file by its name; copies of one name are told apart by the folders the path
+  names, and if they still cannot be, it asks which one is meant.
+
+### Fixed
+
+- On macOS no font was found that draws Cyrillic (Pillow matches a font's file name exactly
+  there, and Arial is `Arial.ttf`), so Russian names came out as boxes in the pictures.
+
 ## 1.1.0 — 2026-10-08
 
 28 tools (21 in 1.0.0).
