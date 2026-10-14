@@ -81,7 +81,7 @@ class Creating(unittest.TestCase):
 
     def test_a_fresh_model_only_lacks_what_is_still_to_be_drawn(self):
         found = {f.rule for f in rules.check(self.editor.snapshot())}
-        self.assertEqual(found, {"needs_control", "needs_output"})
+        self.assertEqual(found, {"needs_control", "needs_output", "no_purpose"})
 
     def test_an_existing_file_is_kept_unless_overwrite_and_then_backed_up(self):
         with self.assertRaises(FileExistsError):

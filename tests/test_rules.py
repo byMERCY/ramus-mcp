@@ -69,6 +69,25 @@ class Syntax(_OnTiny):
         self.assertEqual(keys, sorted(keys))
 
 
+class Purpose(_OnTiny):
+    """IDEF0 asks every model to say why it is made and from whose position it is seen."""
+
+    def test_a_context_with_no_purpose_or_viewpoint_is_warned_about_with_its_fix(self):
+        (f,) = self.rule("no_purpose")
+        self.assertEqual((f.sheet, f.severity), ("A-0", rules.WARNING))
+        self.assertIn("purpose", f.message)
+        self.assertIn("viewpoint", f.message)
+        self.assertTrue(f.fix.startswith("set_purpose("))
+
+    def test_a_purpose_alone_still_asks_for_the_viewpoint_and_both_settle_it(self):
+        self.editor.set_purpose("Показать, как делается дело")
+        (f,) = self.rule("no_purpose")
+        self.assertNotIn("purpose and", f.message)
+        self.assertIn("viewpoint", f.message)
+        self.editor.set_purpose("Показать, как делается дело", "Исполнитель")
+        self.assertEqual(self.rule("no_purpose"), [])
+
+
 class Balance(_OnTiny):
 
     def test_an_arrow_with_no_continuation_on_the_other_level_is_unbalanced(self):
@@ -133,13 +152,37 @@ class Balance(_OnTiny):
 
 class Names(unittest.TestCase):
 
-    def test_an_activity_is_named_by_a_verb_in_the_infinitive(self):
+    def test_an_activity_is_named_by_a_verb_or_a_verbal_noun(self):
         for name in ("Проверить заявку", "Собраться в назначенном месте", "Пойти по маршруту",
-                     "Достичь финальной точки", "Нести груз", "Plan the route", "A=0?"):
+                     "Достичь финальной точки", "Нести груз", "Plan the route", "A=0?",
+                     # a verbal noun names an action too - as a course's own models do
+                     "Проверка заявки", "Компиляция", "Компоновка", "Выполнение программы",
+                     "Разработка исходного текста программы", "Ввод программы в компьютер",
+                     "Тестирование и отладка", "Поиск и устранение ошибок", "Маркетинг",
+                     "Стратегическое планирование", "Предварительная проверка документов",
+                     "Производство продукции"):
             self.assertIsNone(rules._not_a_verb(name), name)
-        for name in ("Проверка заявки", "Отчётность", "Часть работ", "Маркетинг",
-                     "Стратегическое планирование", "Planning", "Inspection of goods"):
+        for name in ("Отчётность", "Часть работ", "Склад", "Программа", "Входные данные",
+                     "Planning", "Inspection of goods"):
             self.assertIsNotNone(rules._not_a_verb(name), name)
+
+    def test_more_than_four_arrows_on_one_side_of_a_box_is_warned_about(self):
+        box = Activity(1, "Сделать", 0, -1, 300, 150, 120, 60, number="A1")
+
+        def into(sid, side, role):
+            return Arrow(sid, sid, f"x{sid}", End("frame", side=side, role=role),
+                         End("activity", 1, side, role), [(7, 50), (300, 50)], flow=sid)
+        out = [Arrow(9, 9, "y", End("activity", 1, "right", "output"),
+                     End("frame", side="right", role="output"), [(420, 180), (793, 180)])]
+        five_left = [into(i, "left", "input") for i in range(1, 6)]
+        (f,) = [f for f in rules._box_rules(_sheet(five_left + out, [box]), box)
+                if f.rule == "too_many_arrows"]
+        self.assertEqual((f.severity, f.activity), (rules.WARNING, "A1"))
+        self.assertIn("5 arrows", f.message)
+        spread = ([into(i, "left", "input") for i in (1, 2)] + [into(i, "top", "control")
+                  for i in (3, 4)] + [into(5, "bottom", "mechanism")])
+        self.assertEqual([f for f in rules._box_rules(_sheet(spread + out, [box]), box)
+                          if f.rule == "too_many_arrows"], [])
 
     def test_a_flow_named_by_a_verb_is_flagged(self):
         sheet = _sheet([_arrow(1, 5, "получить данные"), _arrow(2, 6, "данные")])

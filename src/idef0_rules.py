@@ -8,8 +8,10 @@ Balance and style - a *warning*, allowed but worth a look: an arrow on a box tha
 decomposition comes onto that decomposition's frame with the same role, and every arrow on a
 frame comes from the box above (ICOM balance; an unpaired end is what Ramus draws as a tunnel,
 which is right only when it was meant); an arrow inherited from the box above is drawn on to a
-box; a sheet has 3 to 6 boxes; an activity is named by a verb ("Проверить заявку"), a flow by a
-noun; no arrow crosses a sheet from frame to frame without touching a box.
+box; a sheet has 3 to 6 boxes, and a side of a box takes at most 4 arrows; an activity is named
+by a verb ("Проверить заявку") or a verbal noun ("Проверка заявки"), a flow by a noun; no
+arrow crosses a sheet from frame to frame without touching a box; the context diagram states the
+model's purpose and viewpoint.
 
 After FIPS PUB 183 (IDEF0) and its Russian counterpart, Р 50.1.028-2001. Pure: reads a model
 through the reader, writes nothing.
@@ -60,6 +62,8 @@ def check(model: RsfModel, sheet: Optional[str] = None) -> List[Finding]:
             continue
         if d.notation == "idef0":
             found += _box_count(d)
+            if d.node == "A-0":
+                found += _purpose(d)
             for box in d.activities:
                 found += _box_rules(d, box)
             for a in d.arrows:
@@ -116,11 +120,17 @@ def _box_rules(d: Diagram, box: Activity) -> List[Finding]:
         if problem:
             out.append(Finding("activity_name_verb", WARNING, d.node,
                                f"{label}: {problem}. IDEF0 names an activity by what is done - a "
-                               f"verb phrase, e.g. «Проверить заявку», not «Проверка заявки».",
+                               f"verb («Проверить заявку») or a verbal noun («Проверка заявки»).",
                                fix=f'rename_activity(activity="{box.number}", name="...")',
                                activity=box.number))
     controls = [a for a in d.arrows if _on(a.end, box, "top")]
     outputs = [a for a in d.arrows if _on(a.start, box, "right")]
+    for side, role in (("left", "input"), ("top", "control"), ("bottom", "mechanism")):
+        n = sum(_on(a.end, box, side) for a in d.arrows)
+        if n > _MOST_ON_A_SIDE:
+            out.append(_crowded(d, box, label, n, f"into its {side} side ({role}s)"))
+    if len(outputs) > _MOST_ON_A_SIDE:
+        out.append(_crowded(d, box, label, len(outputs), "out of its right side (outputs)"))
     if not controls:
         out.append(Finding("needs_control", ERROR, d.node,
                            f"{label} has no control (an arrow into its top side). Every activity "
@@ -138,6 +148,35 @@ def _box_rules(d: Diagram, box: Activity) -> List[Finding]:
                                f'{{"activity": "...", "role": "..."}}, name="...")',
                            activity=box.number))
     return out
+
+
+# A box reads best with no more than four arrows on a side - a limit on complexity, like 3 to 6
+# boxes on a sheet (a wish, not a law: a warning).
+_MOST_ON_A_SIDE = 4
+
+
+def _crowded(d: Diagram, box: Activity, label: str, n: int, where: str) -> Finding:
+    return Finding("too_many_arrows", WARNING, d.node,
+                   f"{label} has {n} arrows {where}; a box reads best with at most "
+                   f"{_MOST_ON_A_SIDE} on a side. Bundle related ones under one name (one arrow "
+                   f"that branches on the sheet below), or split the activity.",
+                   activity=box.number)
+
+
+def _purpose(d: Diagram) -> List[Finding]:
+    """The context diagram says why the model is made and from whose position (set_purpose
+    writes them so: «Цель: ...», «Точка зрения: ...»)."""
+    texts = " ".join(t.text or "" for t in d.texts).lower()
+    missing = [what for what, words in (("purpose", ("цель", "purpose")),
+                                        ("viewpoint", ("точка зрения", "viewpoint")))
+               if not any(w in texts for w in words)]
+    if not missing:
+        return []
+    return [Finding("no_purpose", WARNING, d.node,
+                    f"The context diagram states no {' and no '.join(missing)} of the model. "
+                    f"IDEF0 asks every model to say why it is made (its purpose) and from whose "
+                    f"position it is seen (its viewpoint).",
+                    fix='set_purpose(purpose="...", viewpoint="...")')]
 
 
 def _arrow_rules(d: Diagram, a: Arrow) -> List[Finding]:
@@ -267,7 +306,7 @@ def _dfd_box_rules(d: Diagram, box: Activity) -> List[Finding]:
     if problem:
         out.append(Finding("activity_name_verb", WARNING, d.node,
                            f"{label}: {problem}. A process is named by what it does - a verb "
-                           f"phrase, e.g. «Проверить заказ».",
+                           f"(«Проверить заказ») or a verbal noun («Проверка заказа»).",
                            fix=f'rename_activity(activity="{ref}", name="...")',
                            activity=box.number))
     ins = [a for a in d.arrows if a.end.kind == "activity" and a.end.activity_id == box.element_id]
@@ -456,10 +495,30 @@ _NOUNS_IN_TI = {"часть", "власть", "страсть", "снасть", 
 # English names that read as nouns: planning, inspection, management, maintenance.
 _ENGLISH_NOUNS = ("ing", "tion", "sion", "ment", "ance", "ence", "ness")
 
+# A Russian verbal noun names an action as well as a verb does - «Проверка заявки»,
+# «Компиляция», «Ввод данных» - and courses teach IDEF0 so: by its endings, or one of the
+# common ones that have none.
+_VERBAL_NOUN_ENDINGS = ("ние", "тие", "ция", "ка", "аж", "инг")
+_VERBAL_NOUNS = {"ввод", "вывод", "поиск", "расчёт", "расчет", "подсчёт", "подсчет", "анализ",
+                 "синтез", "контроль", "учёт", "учет", "сбор", "выбор", "отбор", "подбор",
+                 "набор", "разбор", "обмен", "приём", "прием", "запуск", "пуск", "перевод",
+                 "ремонт", "обзор", "осмотр", "просмотр", "опрос", "сброс", "возврат", "перенос",
+                 "экспорт", "импорт", "надзор", "обход", "переход", "оплата", "защита", "замена",
+                 "отмена", "охрана", "сдача", "выдача", "передача", "подача", "производство",
+                 "строительство"}
+# An adjective before the noun it qualifies: «Стратегическое планирование».
+_ADJECTIVE = ("ый", "ий", "ой", "ая", "яя", "ое", "ее", "ые", "ие")
+
+_WORD = re.compile(r"[^\W\d_]+(?:-[^\W\d_]+)*")
+
 
 def _first_word(name: str) -> str:
-    m = re.search(r"[^\W\d_]+(?:-[^\W\d_]+)*", name)
+    m = _WORD.search(name)
     return m.group(0).lower() if m else ""
+
+
+def _is_verbal_noun(word: str) -> bool:
+    return word in _VERBAL_NOUNS or (len(word) > 4 and word.endswith(_VERBAL_NOUN_ENDINGS))
 
 
 def _is_cyrillic(word: str) -> bool:
@@ -473,15 +532,18 @@ def _is_infinitive(word: str) -> bool:
 
 
 def _not_a_verb(name: str) -> Optional[str]:
-    """Why an activity's name does not read as a verb phrase, or None if it does (or the
-    language is not one this can tell)."""
+    """Why an activity's name does not read as an action - a verb, or in Russian a verbal
+    noun - or None if it does (or the language is not one this can tell)."""
     word = _first_word(name)
     if not word:
         return None
     if _is_cyrillic(word):
-        if _is_infinitive(word):
-            return None
-        return f"the name starts with «{word}», not a verb in the infinitive"
+        for w in (m.group(0).lower() for m in _WORD.finditer(name)):
+            if _is_infinitive(w) or _is_verbal_noun(w):
+                return None
+            if not w.endswith(_ADJECTIVE):
+                break
+        return f"the name starts with «{word}», which names a thing, not an action"
     if word.isascii() and len(word) > 5 and word.endswith(_ENGLISH_NOUNS):
         return f"the name starts with «{word}», which reads as a noun"
     return None

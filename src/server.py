@@ -720,7 +720,7 @@ def check_layout(sheet: str) -> Dict[str, Any]:
 @mcp.tool(title="Rename an activity", annotations=_EDIT)
 def rename_activity(activity: str, name: str) -> Dict[str, Any]:
     """Give an activity box a new name. ``activity`` is its number ("A12") or id. IDEF0 names
-    an activity with a verb phrase: "Проверить заявку", not "Проверка"."""
+    an activity with a verb phrase ("Проверить заявку") or a verbal noun ("Проверка заявки")."""
     return _edited(_Open.editor.rename_activity(_activity_id(activity), name))
 
 
