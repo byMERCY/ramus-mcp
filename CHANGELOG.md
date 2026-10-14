@@ -2,6 +2,20 @@
 
 **English** · [Русский](CHANGELOG.ru.md)
 
+## 1.1.2 — 2026-10-14
+
+### Changed
+
+- **Activity names.** A Russian verbal noun — «Проверка заявки», «Компиляция», «Ввод данных» —
+  is taken as naming an action, as a verb is: that is how IDEF0 is taught, and how course models
+  are drawn. `check_model` warned about it before.
+
+### Added
+
+- `check_model` warns about a side of a box with more than 4 arrows on it — a limit on
+  complexity, like 3 to 6 boxes on a sheet — and about a model that states no purpose or no
+  viewpoint on its context diagram (`set_purpose` writes them).
+
 ## 1.1.1 — 2026-10-13
 
 ### Changed
